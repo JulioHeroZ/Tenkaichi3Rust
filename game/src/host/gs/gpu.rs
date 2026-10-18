@@ -677,15 +677,9 @@ impl Gpu {
             });
         }
         let mut px = vec![0u32; (tw * th) as usize];
-        // indexed textures: the indices and the palette in index order too (to find a texture pack's file)
-        let pack = bits <= 8 && self.tex_quality > 0 && crate::host::texpack::available() && tw >= 8 && th >= 8;
-        let mut idx = if pack { vec![0u8; (tw * th) as usize] } else { Vec::new() };
         for y in 0..th {
             for x in 0..tw {
                 let c = gs.rd(tbp, tbw, psm, x, y);
-                if pack {
-                    idx[(y * tw + x) as usize] = c as u8;
-                }
                 px[(y * tw + x) as usize] = if bits > 8 {
                     gs.expand(c, psm)
                 } else if bits == 8 {
@@ -698,32 +692,40 @@ impl Gpu {
                 };
             }
         }
+        // a texture pack's replacement (host/texpack.rs): found by the texture's raw blocks and its palette
         let mut want = None;
         let mut ready = None;
-        if pack {
-            let n = if bits == 8 { 256u32 } else { 16 };
-            let pal: Vec<[u8; 4]> = (0..n)
-                .map(|c| {
-                    let p = if bits == 8 {
-                        let s = (c & 0xE7) | ((c & 8) << 1) | ((c & 0x10) >> 1);
-                        gs.rd(cbp, 1, cpsm, s & 15, s >> 4)
-                    } else {
-                        gs.rd(cbp, 1, cpsm, c & 7, c >> 3)
-                    };
-                    gs.expand(p, cpsm).to_le_bytes()
-                })
-                .collect();
-            if let Some(found) = crate::host::texpack::lookup(self.tex_quality, &idx, tw as usize, th as usize, bits, &pal) {
-                let amax = px.iter().map(|p| p >> 24).max().unwrap_or(0x80);
-                let job = found.key;
-                if let Some(r) = self.repl.get(&job) {
-                    ready = Some((r.tex, (tw, th, amax, r.alpha_scale)));
-                } else {
-                    if self.pending.insert(job) {
-                        let thumb = if found.files.len() > 1 { crate::host::texpack::thumb_of_original(&px, tw as usize, th as usize) } else { Vec::new() };
-                        crate::host::texpack::request(crate::host::texpack::Job { found, thumb });
+        let pack = self.tex_quality > 0 && crate::host::texpack::available();
+        if let (true, Some((bw, bh))) = (pack, crate::host::texpack::block_size(psm)) {
+            if tw >= bw && th >= bh {
+                let mut blocks = Vec::with_capacity(((tw / bw) * (th / bh) * 256) as usize);
+                for by in (0..th).step_by(bh as usize) {
+                    for bx in (0..tw).step_by(bw as usize) {
+                        gs.block_into(tbp, tbw, psm, bx, by, &mut blocks);
                     }
-                    want = Some((job, tw, th, amax));
+                }
+                let clut: Vec<u32> = match psm {
+                    0x13 => (0..256u32)
+                        .map(|i| {
+                            let k = (i & 0xE7) | ((i & 8) << 1) | ((i & 0x10) >> 1);
+                            gs.rd(cbp, 1, cpsm, k & 15, k >> 4)
+                        })
+                        .collect(),
+                    0x14 => (0..16u32).map(|i| gs.rd(cbp, 1, cpsm, i & 7, i >> 3)).collect(),
+                    _ => Vec::new(),
+                };
+                let q = crate::host::texpack::Query { psm, tw, th, tcc: ((t0 >> 34) & 1) as u32, cpsm, blocks: &blocks, clut: &clut };
+                if let Some(found) = crate::host::texpack::lookup(self.tex_quality, &q) {
+                    let amax = px.iter().map(|p| p >> 24).max().unwrap_or(0x80);
+                    let job = found.key;
+                    if let Some(r) = self.repl.get(&job) {
+                        ready = Some((r.tex, (tw, th, amax, r.alpha_scale)));
+                    } else {
+                        if self.pending.insert(job) {
+                            crate::host::texpack::request(crate::host::texpack::Job { found });
+                        }
+                        want = Some((job, tw, th, amax));
+                    }
                 }
             }
         }
@@ -1588,11 +1590,10 @@ impl Gpu {
         (gl.ClearColor)(0.0, 0.0, 0.0, 1.0);
         (gl.Clear)(gl::COLOR_BUFFER_BIT);
         if let Some(b) = best.filter(|&b| self.targets[b].cleared) {
-            // the picture's shape: the chosen one (16:9 by default) in fights and the attract demo; the
-            // menus' pages are composed for 4:3, so they are shown at 4:3 in the middle, over a blurred,
-            // darkened copy of themselves that fills the sides
-            let wide = crate::host::settings::wide();
-            let want = if Self::wide_picture() { crate::host::settings::aspect_milli() as f32 / 1000.0 } else { 4.0 / 3.0 };
+            // the picture's shape: the chosen one (16:9 by default). Fights and the attract demo are drawn wide;
+            // the menus' pages are composed for 4:3 and are stretched to it (the player's choice: better than
+            // bars or a blurred copy at the sides)
+            let want = crate::host::settings::aspect_milli() as f32 / 1000.0;
             let fit = |want: f32| {
                 if sw as f32 > sh as f32 * want {
                     ((sh as f32 * want + 0.5) as i32, sh)
@@ -1600,17 +1601,6 @@ impl Gpu {
                     (sw, (sw as f32 / want + 0.5) as i32)
                 }
             };
-            if wide && !Self::wide_picture() {
-                let (w, h) = fit(crate::host::settings::aspect_milli() as f32 / 1000.0);
-                (gl.Viewport)((sw - w) / 2, (sh - h) / 2, w, h);
-                (gl.Disable)(gl::DEPTH_TEST);
-                (gl.Disablei)(gl::BLEND, 0);
-                (gl.ColorMask)(1, 1, 1, 1);
-                (gl.UseProgram)(self.prog_backdrop);
-                (gl.BindVertexArray)(self.vao);
-                self.bind_tex(0, self.targets[b].col, 7);
-                (gl.DrawArrays)(gl::TRIANGLES, 0, 3);
-            }
             let (w, h) = fit(want);
             (gl.Viewport)((sw - w) / 2, (sh - h) / 2, w, h);
             (gl.Disable)(gl::DEPTH_TEST);

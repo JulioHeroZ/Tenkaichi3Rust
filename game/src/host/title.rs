@@ -400,9 +400,14 @@ fn run_options(c: &mut Ctx) {
         return;
     }
     F::Bgm_Play(c, BGM_OPTION);
+    // the options screen sets up a save flow of its own (Option_Init: McFlow_Init) and frees it when it closes
+    // (McFlow_Term: gMcFlow = NULL), which took the title's away: New Game then saved but never left the title.
+    // The title's flow is put back afterwards.
+    let title_flow = c.m.r32(sym::gMcFlow);
     super::options::set_from_title(true);
     F::Option_Run(c, 1);
     super::options::set_from_title(false);
+    c.m.w32(sym::gMcFlow, title_flow);
     F::Adx_StopAll(c);
     let a10 = c.m.r32(sym::gMenuArc10);
     if a10 != 0 {

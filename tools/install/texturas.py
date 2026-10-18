@@ -1,42 +1,53 @@
-"""The HD texture packs (optional): the remaster made by the PLAYANDO channel for the Wii version under Dolphin
-(https://www.youtube.com/watch?v=rJW7idQDqVc), freely shared on Google Drive as two RAR files. The game finds them in
-assets/textures/2x ("1080p": the textures at twice their size) and assets/textures/4x ("4K": four times), and uses
-them as the texture quality of Options > Graphics says (game/src/host/texpack.rs). Nothing of the packs is in the
-project or in its installer: they are downloaded from their author's links, or taken from a .rar or a folder the
-user already has.
+"""The HD texture pack (optional): a pack made for the game under PCSX2 (its texture replacement), freely shared on
+MediaFire as one RAR file (folders replacements/, Fonts/, Original Buttons/, Xbox Layout/). The game finds its
+files at any depth below assets/textures and uses them as the texture quality of Options > Graphics says
+(game/src/host/texpack.rs). Nothing of the pack is in the project or in its installer: it is downloaded from the
+link where it is shared, or taken from a .rar or a folder the user already has.
 
-    python tools/install/texturas.py <2x|4x> <baixar | file.rar | folder> <game folder>
+    python tools/install/texturas.py <baixar | file.rar | folder> <game folder>
 
-A RAR file is extracted with what the computer has: Windows' own tar (Windows 11), 7-Zip or WinRAR.
+The pack's replacements/ folder goes to assets/textures/pcsx2. A RAR file is extracted with what the computer has:
+Windows' own tar (Windows 11), 7-Zip or WinRAR. The packs of earlier versions (the Wii one, assets/textures/2x
+and 4x) are removed: the game no longer reads them.
 """
-import os, re, shutil, subprocess, sys, time, urllib.request
+import html, os, re, shutil, subprocess, sys, time, urllib.request
 from pathlib import Path
 
-PACKS = {
-    "2x": ("1080p", "1b3y3W_n7PkhtuiZyxcCiTdLk7FloqnOT", 1049249734),
-    "4x": ("4K", "1JCyqoopSkz9J29zqeSwlhjvChENdXrqh", 3429234806),
-}
-CREDIT = "texturas HD: canal PLAYANDO (youtube.com/watch?v=rJW7idQDqVc)"
+PAGE = "https://www.mediafire.com/file/2jm75b9v163tieg/Dragon_Ball_Z_-Budokai_Tenkaichi_3.rar/file"
+SIZE = 2107013535
+NAME = "Dragon Ball Z -Budokai Tenkaichi 3.rar"
+CREDIT = "texturas HD: pacote para PCSX2 compartilhado no MediaFire (não faz parte deste projeto)"
+UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Tenkaichi3Rust installer"}
 
 
 def say(text):
     print(text, flush=True)
 
 
-def download(file_id, out, size, label):
-    """the file from Google Drive (the link for big files, past the "cannot scan for viruses" page), with progress"""
-    url = "https://drive.usercontent.google.com/download?id=%s&export=download&confirm=t" % file_id
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Tenkaichi3Rust installer)"})
+def direct_link():
+    """the file's own address, from MediaFire's page (its download button)"""
+    with urllib.request.urlopen(urllib.request.Request(PAGE, headers=UA), timeout=60) as r:
+        page = r.read(2_000_000).decode("utf-8", "replace")
+    m = re.search(r'href="(https?://download\d*\.mediafire\.com/[^"]+)"', page)
+    if m:
+        return html.unescape(m.group(1))
+    m = re.search(r'data-scrambled-url="([^"]+)"', page)
+    if m:
+        import base64
+        return base64.b64decode(m.group(1)).decode("utf-8", "replace")
+    raise SystemExit("O MediaFire não mostrou o link do arquivo (a página pode ter mudado). Baixe pelo navegador:\n"
+                     + PAGE + "\ne escolha o .rar no instalador (Já tenho...).")
+
+
+def download(out):
+    """the RAR file, with progress"""
+    url = direct_link()
     tmp = out.with_suffix(".parte")
-    with urllib.request.urlopen(req, timeout=60) as r:
+    with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=60) as r:
         if "text/html" in (r.headers.get("Content-Type") or ""):
-            page = r.read(200000).decode("utf-8", "replace")
-            if re.search(r"quota|cota|too many users", page, re.I):
-                raise SystemExit("O Google Drive limitou os downloads deste arquivo por hoje (muita gente baixou). Tente "
-                                 "amanhã, ou baixe pelo navegador e escolha o .rar no instalador.")
-            raise SystemExit("O Google Drive não entregou o arquivo (o link pode ter mudado). Baixe pelo navegador e "
-                             "escolha o .rar no instalador.")
-        total = int(r.headers.get("Content-Length") or size)
+            raise SystemExit("O MediaFire não entregou o arquivo. Baixe pelo navegador:\n" + PAGE +
+                             "\ne escolha o .rar no instalador (Já tenho...).")
+        total = int(r.headers.get("Content-Length") or SIZE)
         done, last, t0 = 0, -1, time.time()
         with open(tmp, "wb") as f:
             while True:
@@ -49,9 +60,9 @@ def download(file_id, out, size, label):
                 if pct != last:
                     last = pct
                     speed = done / max(time.time() - t0, 0.1) / (1 << 20)
-                    say("texturas %s: baixando %d%% (%.0f de %.0f MB, %.1f MB/s)" % (label, pct, done / (1 << 20), total / (1 << 20), speed))
+                    say("texturas HD: baixando %d%% (%.0f de %.0f MB, %.1f MB/s)" % (pct, done / (1 << 20), total / (1 << 20), speed))
     if done < total:
-        raise SystemExit("O download das texturas %s parou no meio (%d de %d bytes). Rode de novo." % (label, done, total))
+        raise SystemExit("O download das texturas parou no meio (%d de %d bytes). Rode de novo." % (done, total))
     os.replace(tmp, out)
 
 
@@ -76,11 +87,22 @@ def extractors():
     return found
 
 
-def extract(rar, dest, label):
+def replacements_in(folder):
+    """the pack's replacements folder inside an extracted pack (or the folder itself when it holds the files)"""
+    folder = Path(folder)
+    if folder.name.lower() == "replacements":
+        return folder
+    for p in sorted(folder.rglob("replacements")):
+        if p.is_dir():
+            return p
+    return folder
+
+
+def extract(rar, dest):
     dest.mkdir(parents=True, exist_ok=True)
     tried = []
     for kind, exe in extractors():
-        say("texturas %s: extraindo com %s" % (label, Path(exe).name))
+        say("texturas HD: extraindo com %s" % Path(exe).name)
         args = {"7z": [exe, "x", "-y", "-o" + str(dest), str(rar)],
                 "unrar": [exe, "x", "-o+", "-y", str(rar), str(dest) + os.sep],
                 "tar": [exe, "-xf", str(rar), "-C", str(dest)]}[kind]
@@ -88,29 +110,38 @@ def extract(rar, dest, label):
         if r.returncode == 0 and any(dest.rglob("*.dds")):
             return
         tried.append(Path(exe).name)
-    raise SystemExit("Não consegui abrir o arquivo RAR das texturas %s%s. Instale o 7-Zip (7-zip.org) e rode de novo, "
-                     "ou extraia o .rar e escolha a pasta no instalador." % (label, " (tentei %s)" % ", ".join(tried) if tried else ""))
+    raise SystemExit("Não consegui abrir o arquivo RAR das texturas%s. Instale o 7-Zip (7-zip.org) e rode de novo, "
+                     "ou extraia o .rar e escolha a pasta no instalador." % (" (tentei %s)" % ", ".join(tried) if tried else ""))
 
 
-def install(which, source, game):
-    label, file_id, size = PACKS[which]
-    dest = Path(game) / "assets" / "textures" / which
-    say("\n== texturas HD %s (%s)" % (label, CREDIT))
+def install(source, game):
+    textures = Path(game) / "assets" / "textures"
+    dest = textures / "pcsx2"
+    say("\n== texturas HD (%s)" % CREDIT)
+    for old in ("2x", "4x"):
+        if (textures / old).exists():
+            say("texturas HD: removendo o pacote antigo (%s)" % old)
+            shutil.rmtree(textures / old, ignore_errors=True)
     if dest.exists() and any(dest.rglob("*.dds")) and source == "baixar":
-        say("texturas %s: já instaladas" % label)
+        say("texturas HD: já instaladas")
         return
     shutil.rmtree(dest, ignore_errors=True)
     src = Path(source) if source != "baixar" else None
+    if src is not None and src.is_file() and src.suffix.lower() == ".dds":
+        src = src.parent  # a .dds of a folder already extracted: that folder
     if src is not None and src.is_dir():
-        # a folder already extracted: its .dds files, as they are laid out
+        # a folder already extracted: its replacements folder, as it is laid out
+        rep = replacements_in(src)
         n = 0
-        for f in src.rglob("*.dds"):
-            out = dest / f.relative_to(src)
+        for f in rep.rglob("*"):
+            if f.suffix.lower() not in (".dds", ".png"):
+                continue
+            out = dest / f.relative_to(rep)
             out.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(f, out)
             n += 1
             if n % 500 == 0:
-                say("texturas %s: %d arquivos copiados" % (label, n))
+                say("texturas HD: %d arquivos copiados" % n)
         if n == 0:
             raise SystemExit("A pasta %s não tem texturas (.dds)." % src)
     else:
@@ -118,19 +149,23 @@ def install(which, source, game):
         work.mkdir(parents=True, exist_ok=True)
         rar = src
         if rar is None:
-            rar = work / ("texturas-%s.rar" % which)
-            if not (rar.exists() and rar.stat().st_size == size):
-                download(file_id, rar, size, label)
-        extract(rar, dest, label)
+            rar = work / "texturas-hd.rar"
+            if not (rar.exists() and rar.stat().st_size == SIZE):
+                download(rar)
+        out = textures / "_extraindo"
+        shutil.rmtree(out, ignore_errors=True)
+        extract(rar, out)
+        os.replace(replacements_in(out), dest)
+        shutil.rmtree(out, ignore_errors=True)
         if src is None:
             rar.unlink()  # downloaded here: not needed any more
-    say("texturas %s: %d texturas instaladas" % (label, sum(1 for _ in dest.rglob("*.dds"))))
+    say("texturas HD: %d texturas instaladas" % sum(1 for _ in dest.rglob("*.dds")))
 
 
 def main():
-    if len(sys.argv) != 4 or sys.argv[1] not in PACKS:
+    if len(sys.argv) != 3:
         raise SystemExit(__doc__)
-    install(sys.argv[1], sys.argv[2], sys.argv[3])
+    install(sys.argv[1], sys.argv[2])
 
 
 if __name__ == "__main__":

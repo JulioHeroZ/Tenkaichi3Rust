@@ -491,13 +491,17 @@ unsafe fn create(hwnd: HWND) {
     let mut tex = [0; 2];
     let mut tex_pick = [0; 2];
     let mut tex_from = [0; 2];
-    for (i, label) in ["1080p (Alta): 1 GB", "4K (Ultra): 3,4 GB"].iter().enumerate() {
+    for (i, label) in ["Pacote HD: 2 GB", ""].iter().enumerate() {
         let y = 412 + 28 * i as i32;
         tex[i] = control(hwnd, "BUTTON", label, WS_TABSTOP | BS_AUTOCHECKBOX, 0, 24, y, 220, 22, ID_TEX[i], font);
-        tex_from[i] = control(hwnd, "STATIC", "baixado do Google Drive do autor", st, 0, 250, y + 2, 296, 20, 0, font);
+        tex_from[i] = control(hwnd, "STATIC", "baixado do MediaFire", st, 0, 250, y + 2, 296, 20, 0, font);
         tex_pick[i] = control(hwnd, "BUTTON", "Já tenho...", WS_TABSTOP | BS_PUSHBUTTON, 0, 552, y - 2, 104, 26, ID_TEX_PICK[i], font);
     }
-    control(hwnd, "STATIC", "Remaster das texturas feito pelo canal PLAYANDO (YouTube). Não faz parte deste projeto.",
+    // one pack now (made for PCSX2): the second row is not used
+    for c in [tex[1], tex_pick[1], tex_from[1]] {
+        ShowWindow(c, 0);
+    }
+    control(hwnd, "STATIC", "Texturas em alta resolução feitas para o PCSX2, compartilhadas no MediaFire. Não fazem parte deste projeto.",
             st, 0, 24, 470, 632, 20, 0, font);
     let status = control(hwnd, "STATIC", "Escolha a imagem do disco e clique em Instalar.", st, 0, 24, 504, 632, 20, 0, font);
     let progress = control(hwnd, "msctls_progress32", "", 0, 0, 24, 528, 632, 18, 0, font);
@@ -589,10 +593,10 @@ fn check_existing() {
     let fresh = unsafe { SendMessageW(u.fresh, BM_GETCHECK, 0, 0) == 1 };
     state(|s| s.update = same && !fresh);
     unsafe { ShowWindow(u.fresh, same as i32) };
-    let installed = |i: usize| assets.join("textures").join(["2x", "4x"][i]).is_dir();
+    let installed = |i: usize| i == 0 && assets.join("textures").join("pcsx2").is_dir();
     for i in 0..2 {
         if state(|s| s.tex_file[i].is_none()) {
-            set_text(u.tex_from[i], if installed(i) { "já instaladas nesta pasta" } else { "baixado do Google Drive do autor" });
+            set_text(u.tex_from[i], if installed(i) { "já instaladas nesta pasta" } else { "baixado do MediaFire" });
         }
     }
     if same && !fresh {
@@ -677,9 +681,9 @@ unsafe fn pick_tex(hwnd: HWND, i: usize) {
     let mut file = vec![0u16; 1024];
     let filter: Vec<u16> = "Pacote de texturas (*.rar; *.dds)\0*.rar;*.dds\0Todos os arquivos\0*.*\0\0".encode_utf16().collect();
     let title = w(if i == 0 {
-        "Texturas 1080p: escolha o TEXTURAS 1080p.rar (ou um .dds da pasta já extraída)"
+        "Texturas HD: escolha o .rar do pacote (ou um .dds da pasta já extraída)"
     } else {
-        "Texturas 4K: escolha o TEXTURAS 4K.rar (ou um .dds da pasta já extraída)"
+        "Texturas HD: escolha o .rar do pacote (ou um .dds da pasta já extraída)"
     });
     let mut o = OPENFILENAMEW {
         lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
@@ -829,7 +833,8 @@ fn start_install(hwnd: HWND) {
     let files = state(|s| s.tex_file.clone());
     let textures: Vec<(&str, String)> = (0..2)
         .filter(|&i| unsafe { SendMessageW(u.tex[i], BM_GETCHECK, 0, 0) == 1 })
-        .map(|i| (["--texturas-2x", "--texturas-4x"][i], files[i].clone().unwrap_or_else(|| "baixar".into())))
+        .filter(|&i| i == 0)
+        .map(|i| ("--texturas", files[i].clone().unwrap_or_else(|| "baixar".into())))
         .collect();
     let update = state(|s| s.update);
     let fresh = unsafe { SendMessageW(u.fresh, BM_GETCHECK, 0, 0) == 1 };
@@ -903,7 +908,7 @@ fn progress_of(line: &str, dev: bool) -> Option<(f64, String)> {
             _ if rest.starts_with("empacot") => stage(900.0, "Empacotando os dados do jogo"),
             _ if rest.starts_with("atualizando") => stage(300.0, "Atualizando: os dados do jogo já estão em dia"),
             _ if rest.starts_with("instalando o jogo") => stage(if state(|s| s.update) { 600.0 } else { 890.0 }, "Instalando o programa"),
-            _ if rest.starts_with("texturas HD 1080p") => stage(940.0, "Texturas HD 1080p"),
+            _ if rest.starts_with("texturas HD") => stage(940.0, "Texturas HD"),
             _ if rest.starts_with("texturas HD 4K") => stage(965.0, "Texturas HD 4K"),
             _ if rest.starts_with("compilando") => None,
             _ => None,

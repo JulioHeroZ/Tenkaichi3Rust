@@ -20,11 +20,11 @@ when the tools' output changes) and the kind of installation. Installing again i
 only replaces the programs (Tenkaichi3.exe, its libraries, Desinstalar.exe) and keeps the data: no disc image needed,
 a few seconds. When the tools changed, or the kind did, or with --do-zero, it installs from the start.
 
-Optionally the HD texture packs (tools/install/texturas.py): --texturas-2x / --texturas-4x baixar (download) or a
+Optionally the HD texture pack (tools/install/texturas.py, a pack made for PCSX2): --texturas baixar (download) or a
 .rar or folder the user has.
 
     python tools/install/instalar.py <disc.iso> [--modo jogador|desenvolvedor] [--destino <folder>]
-                                     [--texturas-2x baixar|<file.rar>|<folder>] [--texturas-4x ...]
+                                     [--texturas baixar|<file.rar>|<folder>]
 
 The installer's window (Instalar Tenkaichi 3.exe, tools/install/src/bin/instalador.rs) runs this.
 """
@@ -36,7 +36,7 @@ PY = sys.executable
 TOOLS = ROOT / "tools"
 BIN = ROOT / "bin"  # the player package's ready programs (tools/install/empacotar.py)
 EXE = ".exe" if os.name == "nt" else ""
-VERSION = "0.2.3"  # the installer's, shown in Settings > Apps
+VERSION = "0.3.0"  # the installer's, shown in Settings > Apps
 STAMP = "instalacao.txt"  # in assets/: what is installed there
 
 
@@ -226,9 +226,9 @@ def install(iso, mode, dest, textures=(), fresh=False):
     if opening.exists():
         run("ícone do jogo", [str(program("bt3-install", "bt3-install", "bt3-install")), "icone", str(opening),
                               str(icon), str(dest / ("Tenkaichi3" + EXE)), str(dest / ("Desinstalar" + EXE))])
-    for which, source in textures:
+    for source in textures:
         if source:
-            run("texturas HD %s" % which, [PY, "-u", str(TOOLS / "install" / "texturas.py"), which, source, str(dest)])
+            run("texturas HD", [PY, "-u", str(TOOLS / "install" / "texturas.py"), source, str(dest)])
     shutil.rmtree(work, ignore_errors=True)
     if not update:
         (assets / STAMP).write_text("dados=%s\nmodo=%s\nversao=%s\n" % (data_version(), mode, VERSION), encoding="utf-8")
@@ -253,8 +253,7 @@ def main():
     p.add_argument("--modo", choices=["jogador", "desenvolvedor"], default="jogador",
                    help="jogador: os dados em pacotes; desenvolvedor: os arquivos do jogo editáveis")
     p.add_argument("--destino", default=None, help="pasta do jogo (padrão: Program Files (x86)\\Tenkaichi 3)")
-    p.add_argument("--texturas-2x", default=None, help="texturas HD 1080p: baixar, ou um .rar ou uma pasta que você já tem")
-    p.add_argument("--texturas-4x", default=None, help="texturas HD 4K: baixar, ou um .rar ou uma pasta que você já tem")
+    p.add_argument("--texturas", default=None, help="texturas HD (pacote para PCSX2): baixar, ou o .rar ou uma pasta que você já tem")
     p.add_argument("--do-zero", action="store_true", help="refaz os dados do jogo mesmo que já estejam em dia")
     p.add_argument("--verificar", action="store_true",
                    help="só diz se a pasta pode ser atualizada sem a imagem do disco (atualizar / instalar)")
@@ -263,7 +262,7 @@ def main():
     if a.verificar:
         print("atualizar" if up_to_date(dest, a.modo) else "instalar")
         return
-    install(a.iso, a.modo, dest, [("2x", a.texturas_2x), ("4x", a.texturas_4x)], a.do_zero)
+    install(a.iso, a.modo, dest, [a.texturas], a.do_zero)
 
 
 if __name__ == "__main__":

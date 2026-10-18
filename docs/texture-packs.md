@@ -1,72 +1,54 @@
-# Texturas HD (pacotes do Dolphin)
+# Texturas HD (pacotes do PCSX2)
 
-O jogo usa o remaster de texturas do canal **PLAYANDO**, apresentado no vídeo
-[REMASTERIZEI SOZINHO O DRAGON BALL Z BUDOKAI TENKAICHI 3](https://www.youtube.com/watch?v=rJW7idQDqVc). Esse
-pacote foi feito para a versão de Wii (código RDSE70) rodando no Dolphin e é distribuído de graça pelo autor no
-Google Drive:
+O jogo usa pacotes de texturas feitos para o **PCSX2** (a substituição de texturas do emulador). O pacote que o
+instalador oferece é compartilhado no MediaFire:
+[Dragon Ball Z -Budokai Tenkaichi 3.rar](https://www.mediafire.com/file/2jm75b9v163tieg/Dragon_Ball_Z_-Budokai_Tenkaichi_3.rar/file)
+(2 GB). Ele traz as pastas `replacements/` (as texturas), `Fonts/` (letra nova ou original), `Original Buttons/` e
+`Xbox Layout/` (dois desenhos dos botões).
 
-* `TEXTURAS 1080p.rar`: 1 GB, as texturas com 2x o tamanho original;
-* `TEXTURAS 4K.rar`: 3,4 GB, com 4x.
+O pacote não faz parte do projeto e nem do instalador. O instalador baixa o arquivo do link acima
+(`tools/install/texturas.py`), ou usa o `.rar` ou uma pasta que a pessoa já tenha, e põe a pasta `replacements`
+em `assets/textures/pcsx2`. Para abrir o RAR, ele usa o que o computador tiver: o `tar` do Windows 11, o 7-Zip ou o
+WinRAR. As variantes de letra e de botões entram copiando a pasta delas por cima de `assets/textures/pcsx2`, como o
+`Fonts/Installation.txt` do pacote explica.
 
-Os pacotes não fazem parte do projeto e nem do instalador. O instalador baixa os arquivos dos links do autor
-(`tools/install/texturas.py`), ou usa um `.rar` ou uma pasta que a pessoa já tenha, e os põe em
-`assets/textures/2x` e `assets/textures/4x`. Para abrir o RAR, ele usa o que o computador tiver: o `tar` do Windows
-11, o 7-Zip ou o WinRAR.
+Até a versão 0.2.x o jogo usava o remaster do canal PLAYANDO, feito para o Wii no Dolphin. O de PCSX2 é calculado
+direto sobre os dados do PS2, então não há conversão de paletas nem escolha por semelhança: cada arquivo é a textura
+exata. O instalador apaga o pacote antigo (`assets/textures/2x` e `4x`).
 
 ## Como o jogo acha cada arquivo
 
-O jogo de Wii usa as mesmas texturas do PS2, índice por índice. O Dolphin nomeia cada arquivo assim:
-`tex1_<largura>x<altura>_<hash da textura>_<hash da paleta>_<formato>.dds`. Os dois hashes são calculados assim
-(`VideoCommon/TextureInfo.cpp` do Dolphin):
+Do mesmo jeito que o port em C (Tenkaichi3Decomp, `port/src/gs/gs_texpack.c`). Cada arquivo se chama
+`<hash da textura>-<hash da paleta>-<bits>.dds` (sem o hash da paleta numa textura sem paleta), em hexadecimal:
 
-* **Hash da textura:** XXH64 (seed 0) dos índices no layout em blocos do Wii. São blocos de 8x8 para índices de
-  4 bits (dois por byte, o primeiro no nibble alto) e de 8x4 para índices de 8 bits.
-* **Hash da paleta:** XXH64 das cores da paleta, do menor ao maior índice usado, cada uma em RGB5A3 big-endian.
-* **Formato:** 8 (C4) ou 9 (C8).
+* **Hash da textura:** XXH3 de 64 bits (`game/src/host/xxh3.rs`) dos blocos de 256 bytes da memória do GS que a
+  textura ocupa, bloco a bloco, linha a linha: os dados como estão na memória.
+* **Hash da paleta:** XXH3 das cores de 32 bits da paleta, em ordem de índice, do menor ao maior índice que a
+  textura usa (alguns arquivos usam a paleta inteira: o jogo procura os dois).
+* **Bits:** `PSM | log2(largura) << 6 | log2(altura) << 10 | TCC << 14`.
 
-Quando a textura não está no cache, o `texture_get` do renderizador (`game/src/host/gs/gpu.rs`) lê os índices da
-memória do GS, calcula o hash e procura o arquivo (`game/src/host/texpack.rs`). Tudo isso acontece com as texturas
-do jogo enquanto ele roda, sem nenhuma conversão do pacote.
+Quando a textura não está no cache, o `texture_get` do renderizador (`game/src/host/gs/gpu.rs`) lê os blocos da
+memória do GS e procura o arquivo (`game/src/host/texpack.rs`). Formatos: 8 bits e 4 bits com paleta, e 32 bits.
 
-## O que os arquivos contêm
-
-* **Paleta opaca:** uma imagem colorida. O hash da paleta bate exatamente com a paleta do PS2 convertida para
-  RGB5A3.
-* **Paleta com transparência:** o Wii não tem paleta com 8 bits de cada canal mais alpha. Então a mesma textura é
-  lida com duas paletas de intensidade e alpha (IA8): uma dá o vermelho (intensidade) e o verde (alpha), a outra dá
-  o azul e o alpha do PS2 (0x80 = opaco). O pacote traz as duas imagens, cinza, com dois hashes de paleta. O jogo
-  descobre qual é qual comparando com a textura original (um resumo de 8x8 células) e junta as duas numa imagem
-  colorida.
-* **Texturas pintadas pelo jogo com várias paletas:** vários arquivos. Quando o hash da paleta não bate com nenhum,
-  vale o arquivo (ou o par de metades) cujo resumo fica mais perto do original. A escolha é guardada por textura e
-  paleta.
-* **Alpha:** o de uma imagem do Wii vai até 255 (255 = opaco). Arquivos cujo alpha não passa de 130 já trazem o
-  alpha do PS2. O shader recebe a escala certa em `orig.w`.
-
-Os arquivos são lidos e decodificados (DXT1, DXT3, DXT5 ou 32 bits) em duas threads. Até a substituta ficar
-pronta, aparece a original. As substitutas vão para a placa de vídeo com mip levels, usados no 3D.
-
-A arte 2D segue as regras do port em C (`gs_draw.c`):
-
-* é amostrada por pixel de saída, limitada ao retângulo da folha que a peça mostra;
-* sempre com filtro;
-* sem mip levels;
-* com o alpha limitado ao maior alpha da original.
+O alpha dos arquivos é o do GS (0x80 = opaco), igual ao das texturas que eles trocam. Os arquivos (DDS DXT1, DXT3,
+DXT5 ou 32 bits, ou PNG) são lidos e decodificados em duas threads. Até a substituta ficar pronta, aparece a
+original. As substitutas vão para a placa de vídeo com mip levels, usados no 3D. A arte 2D segue as regras do port
+em C (`gs_draw.c`): amostrada por pixel de saída dentro do retângulo da folha, sempre com filtro, com o alpha
+limitado ao maior alpha da original.
 
 ## Qualidade das texturas (Options > Graphics)
 
 | Opção | Pacote |
 | --- | --- |
 | Low | as texturas do PS2 |
-| Medium | o pacote 1080p reduzido ao tamanho original (a arte redesenhada, sem ampliar) |
-| High | o pacote 1080p (ou o 4K reduzido pela metade) |
-| Ultra | o pacote 4K (ou o 1080p) |
+| Medium | o pacote com metade do tamanho |
+| High, Ultra | o pacote como ele é |
 
-Trocar a qualidade refaz as texturas na hora. `BT3_TEXTURES=<pasta>` acrescenta um lugar onde procurar os pacotes.
-`BT3_TEX_LOG=1` mostra as escolhas entre arquivos.
+Trocar a qualidade refaz as texturas na hora. `BT3_TEXTURES=<pasta>` acrescenta um lugar onde procurar. `BT3_TEX_LOG=1`
+mostra cada textura com paleta, achada ou não, pelo nome que o arquivo teria.
 
 ## Limites conhecidos
 
-* Texturas de 32 bits (formato 6 do pacote, cerca de 400 arquivos) ainda não são procuradas.
-* Em algumas texturas de cenário, a escolha pelo resumo pode errar entre as paletas. Aparece como um detalhe
-  diferente do original, por exemplo um arbusto no lugar de uma árvore seca.
+* Texturas menores que um bloco do GS (16x16 em 8 bits, 32x16 em 4 bits, 8x8 em 32 bits) não são procuradas: o
+  PCSX2 calcula outro hash para elas, que ainda não foi descoberto.
+* Paletas de 16 bits não são procuradas (o jogo não usa).

@@ -5,6 +5,21 @@ O registro do trabalho, do mais recente ao mais antigo. A organização atual es
 
 
 
+
+## Pacote de texturas do PCSX2, New Game depois de Options, menus esticados (Claude, 18/10/2026)
+
+- Texturas HD: o pacote do Wii (PLAYANDO, Dolphin) deu lugar a pacotes do PCSX2, achados como o port em C acha
+  (`port/src/gs/gs_texpack.c` do Tenkaichi3Decomp): XXH3 dos blocos crus da memória do GS e da paleta
+  (`host/xxh3.rs`, conferido contra o xxhash.h em 3002 entradas). Sem conversão de paletas IA8 nem escolha por
+  semelhança: some o Piccolo esbranquiçado da tela inicial, a caixa de texto branca e o retrato branco da seleção.
+  Na nuvem, 1639 arquivos do pacote: tela inicial, menu principal e Dragon History em HD. O instalador baixa o
+  pacote do MediaFire (`texturas.py`) e apaga o pacote antigo.
+- New Game não saía da tela inicial depois de abrir Options por ela: a tela de opções cria um fluxo de save próprio
+  (`McFlow_Init`) e o apaga ao fechar (`gMcFlow = NULL`), levando junto o da tela inicial; o save era gravado, mas o
+  aviso de "pronto" nunca chegava. `run_options` (`host/title.rs`) devolve o fluxo da tela inicial. Reproduzido e
+  conferido na nuvem.
+- Menus: esticados para a proporção escolhida, no lugar da imagem 4:3 sobre a cópia desfocada (pedido do usuário).
+
 ## Conversão mais rápida (Claude, 18/10/2026)
 
 - Medido onde o tempo da instalação vai: a maior parte é o `pzs3us2` (65.201 vozes e músicas em ADX, 1,1 GB) e os

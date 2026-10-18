@@ -1,153 +1,58 @@
-//! HD texture packs made for the Wii version of the game under Dolphin (RDSE70): the texture quality of
-//! Options > Graphics (host/settings.rs textures): Low = the PS2's own textures; Medium = the 2x pack shown at the
-//! original's size (redrawn art, not upscaled); High = the 2x pack ("1080p"); Ultra = the 4x pack ("4K").
+//! Texture packs in the naming of PCSX2's texture replacement (packs made for the game under that emulator work as
+//! they are; the same as the C port, Tenkaichi3Decomp port/src/gs/gs_texpack.c). The texture quality of
+//! Options > Graphics (host/settings.rs textures): Low = the PS2's own textures; Medium = the pack's pictures at
+//! half their size; High and Ultra = the pack as it is.
 //!
-//! The Wii game uses the same textures as the PS2's, index for index, so a pack's file is found from the texture
-//! the game uploads, as Dolphin names it: `tex1_<w>x<h>_<texture hash>_<palette hash>_<format>.dds`, where
-//!   texture hash  XXH64 (seed 0) of the indices in the Wii's tiled layout (blocks of 8 x 8 for 4-bit indices,
-//!                 two per byte, the first in the high nibble; 8 x 4 for 8-bit), blocks in rows
-//!   palette hash  XXH64 of the palette entries from the lowest index the texture uses to the highest, each as
-//!                 the Wii's RGB5A3, big-endian (opaque: 1rrrrrgggggbbbbb; else 0aaarrrrggggbbbb)
-//!   format        8 (C4) or 9 (C8)
-//! (Dolphin's VideoCommon/TextureInfo.cpp.) Checked on the extracted textures: every sample found its file, and
-//! the palette hash matched for every opaque palette; for a palette with see-through colours the Wii's alpha
-//! rounding is not known, so the first file of the texture is used.
+//! A file is named <texture hash>-<palette hash>-<bits>.dds (or .png) (two parts, without the palette hash, for a
+//! texture without a palette), the hashes in hexadecimal without leading zeros:
+//!   texture hash  XXH3 (64 bits, host/xxh3.rs) over the texture's raw 256-byte blocks of GS memory, block after
+//!                 block in row-major block order over the texture's rectangle: the data as it lies in GS memory
+//!   palette hash  XXH3 over the palette's 32-bit entries in index order, from the lowest to the highest index the
+//!                 texture uses (some files: over the whole palette; both are looked up)
+//!   bits          PSM | log2(width) << 6 | log2(height) << 10 | TCC << 14
+//! A pack's alpha is the GS's own (0x80 = opaque), like the textures it replaces.
 //!
-//! The packs live in assets/textures/2x and assets/textures/4x (any folders below; the installer puts them there,
-//! BT3_TEXTURES=<folder> for one more place to look). Files are read and decoded on worker threads; until a
-//! replacement is ready the original is shown.
+//! The files are looked for at any depth below assets/textures (the installer puts a pack there) and the folder
+//! BT3_TEXTURES names; where a name is there twice, the first one found (folders in name order) is used. Files are
+//! read and decoded on worker threads; until a replacement is ready the original is shown.
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Mutex, OnceLock};
 
-// ------------------------------------------------------------------------------------------------ XXH64
-const P1: u64 = 0x9E37_79B1_85EB_CA87;
-const P2: u64 = 0xC2B2_AE3D_27D4_EB4F;
-const P3: u64 = 0x1656_67B1_9E37_79F9;
-const P4: u64 = 0x85EB_CA77_C2B2_AE63;
-const P5: u64 = 0x27D4_EB2F_1656_67C5;
+/// (texture hash, palette hash or 0, bits, has a palette) -> file
+type Index = HashMap<(u64, u64, u32, bool), PathBuf>;
 
-fn round(acc: u64, v: u64) -> u64 {
-    acc.wrapping_add(v.wrapping_mul(P2)).rotate_left(31).wrapping_mul(P1)
-}
-
-fn merge(acc: u64, v: u64) -> u64 {
-    (acc ^ round(0, v)).wrapping_mul(P1).wrapping_add(P4)
-}
-
-pub fn xxh64(data: &[u8], seed: u64) -> u64 {
-    let r64 = |b: &[u8]| u64::from_le_bytes(b[..8].try_into().unwrap());
-    let r32 = |b: &[u8]| u32::from_le_bytes(b[..4].try_into().unwrap()) as u64;
-    let n = data.len();
-    let mut p = data;
-    let mut h = if n >= 32 {
-        let mut v = [seed.wrapping_add(P1).wrapping_add(P2), seed.wrapping_add(P2), seed, seed.wrapping_sub(P1)];
-        while p.len() >= 32 {
-            for (i, x) in v.iter_mut().enumerate() {
-                *x = round(*x, r64(&p[i * 8..]));
-            }
-            p = &p[32..];
-        }
-        let mut h = v[0].rotate_left(1).wrapping_add(v[1].rotate_left(7)).wrapping_add(v[2].rotate_left(12)).wrapping_add(v[3].rotate_left(18));
-        for x in v {
-            h = merge(h, x);
-        }
-        h
+/// "1dd4c76113969303-56e3d4469d2ad392-00005e54.dds": (texture hash, palette hash, bits, has a palette)
+fn parse_name(name: &str) -> Option<(u64, u64, u32, bool)> {
+    let lower = name.to_ascii_lowercase();
+    let stem = lower.strip_suffix(".dds").or_else(|| lower.strip_suffix(".png"))?;
+    let parts: Vec<&str> = stem.split('-').collect();
+    if !(2..=3).contains(&parts.len()) || parts.iter().any(|p| p.is_empty() || p.len() > 16 || !p.bytes().all(|c| c.is_ascii_hexdigit())) {
+        return None;
+    }
+    let tex = u64::from_str_radix(parts[0], 16).ok()?;
+    let bits = u32::from_str_radix(parts[parts.len() - 1], 16).ok()?;
+    if parts.len() == 3 {
+        Some((tex, u64::from_str_radix(parts[1], 16).ok()?, bits, true))
     } else {
-        seed.wrapping_add(P5)
-    };
-    h = h.wrapping_add(n as u64);
-    while p.len() >= 8 {
-        h ^= round(0, r64(p));
-        h = h.rotate_left(27).wrapping_mul(P1).wrapping_add(P4);
-        p = &p[8..];
+        Some((tex, 0, bits, false))
     }
-    if p.len() >= 4 {
-        h ^= r32(p).wrapping_mul(P1);
-        h = h.rotate_left(23).wrapping_mul(P2).wrapping_add(P3);
-        p = &p[4..];
-    }
-    for &b in p {
-        h ^= (b as u64).wrapping_mul(P5);
-        h = h.rotate_left(11).wrapping_mul(P1);
-    }
-    h ^= h >> 33;
-    h = h.wrapping_mul(P2);
-    h ^= h >> 29;
-    h = h.wrapping_mul(P3);
-    h ^ (h >> 32)
-}
-
-// ------------------------------------------------------------------------------------------------ names
-/// The texture hash of indices `idx` (one per texel, `w` x `h`), 4- or 8-bit, in the Wii's layout.
-pub fn texture_hash(idx: &[u8], w: usize, h: usize, bits: u32) -> u64 {
-    let (bw, bh) = if bits == 4 { (8, 8) } else { (8, 4) };
-    let mut out = Vec::with_capacity(w * h);
-    for by in (0..h).step_by(bh) {
-        for bx in (0..w).step_by(bw) {
-            for y in by..by + bh {
-                let row = &idx[y * w + bx..y * w + bx + 8];
-                if bits == 4 {
-                    for i in (0..8).step_by(2) {
-                        out.push((row[i] & 15) << 4 | (row[i + 1] & 15));
-                    }
-                } else {
-                    out.extend_from_slice(row);
-                }
-            }
-        }
-    }
-    xxh64(&out, 0)
-}
-
-/// The palette hash: entries `pal` (RGBA with the PS2's alpha, 0x80 opaque) from the lowest to the highest index
-/// of `idx`.
-pub fn palette_hash(idx: &[u8], pal: &[[u8; 4]]) -> u64 {
-    let lo = *idx.iter().min().unwrap_or(&0) as usize;
-    let hi = (*idx.iter().max().unwrap_or(&0) as usize).min(pal.len().saturating_sub(1));
-    let mut b = Vec::with_capacity(2 * (hi + 1 - lo));
-    for p in &pal[lo..=hi] {
-        let (r, g, bl) = (p[0] as u16, p[1] as u16, p[2] as u16);
-        let a = (p[3] as u16 * 2).min(255);
-        let v = if a >= 255 { 0x8000 | (r >> 3) << 10 | (g >> 3) << 5 | bl >> 3 } else { (a >> 5) << 12 | (r >> 4) << 8 | (g >> 4) << 4 | bl >> 4 };
-        b.extend_from_slice(&v.to_be_bytes());
-    }
-    xxh64(&b, 0)
-}
-
-// ------------------------------------------------------------------------------------------------ the packs
-/// The files of one pack: texture hash -> (palette hash, file) for each file of the texture.
-#[derive(Default)]
-struct Index {
-    files: HashMap<u64, Vec<(u64, PathBuf)>>,
 }
 
 fn index_dir(dir: &Path, idx: &mut Index, depth: u32) {
     let Ok(rd) = std::fs::read_dir(dir) else { return };
-    for e in rd.flatten() {
-        let p = e.path();
+    let mut entries: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
+    entries.sort();
+    for p in entries {
         if p.is_dir() {
-            if depth < 4 {
+            if depth < 8 {
                 index_dir(&p, idx, depth + 1);
             }
             continue;
         }
-        let Some(name) = p.file_name().and_then(|n| n.to_str()) else { continue };
-        let lower = name.to_ascii_lowercase();
-        if !lower.starts_with("tex1_") || !lower.ends_with(".dds") {
-            continue;
-        }
-        let mut parts: Vec<&str> = lower[..lower.len() - 4].split('_').collect();
-        if parts.get(2) == Some(&"m") {
-            parts.remove(2);
-        }
-        if parts.len() < 4 {
-            continue;
-        }
-        let Ok(tex) = u64::from_str_radix(parts[2], 16) else { continue };
-        let tlut = if parts.len() >= 5 { u64::from_str_radix(parts[3], 16).unwrap_or(0) } else { 0 };
-        idx.files.entry(tex).or_default().push((tlut, p.clone()));
+        let Some(key) = p.file_name().and_then(|n| n.to_str()).and_then(parse_name) else { continue };
+        idx.entry(key).or_insert(p);
     }
 }
 
@@ -158,11 +63,11 @@ pub fn set_root(assets: &Path) {
     let _ = ROOT.set(assets.to_path_buf());
 }
 
-/// The two packs (2x, 4x), found once.
-fn packs() -> &'static [Index; 2] {
-    static P: OnceLock<[Index; 2]> = OnceLock::new();
+/// The pack's files, found once.
+fn pack() -> &'static Index {
+    static P: OnceLock<Index> = OnceLock::new();
     P.get_or_init(|| {
-        let mut out = [Index::default(), Index::default()];
+        let mut idx = Index::new();
         let mut roots: Vec<PathBuf> = Vec::new();
         if let Some(a) = ROOT.get() {
             roots.push(a.join("textures"));
@@ -171,136 +76,105 @@ fn packs() -> &'static [Index; 2] {
             roots.push(PathBuf::from(t));
         }
         for r in &roots {
-            for (k, sub) in ["2x", "4x"].iter().enumerate() {
-                index_dir(&r.join(sub), &mut out[k], 0);
-            }
+            index_dir(r, &mut idx, 0);
         }
-        for (k, n) in ["2x", "4x"].iter().enumerate() {
-            if !out[k].files.is_empty() {
-                eprintln!("bt3: texture pack {n}: {} textures", out[k].files.len());
-            }
+        if !idx.is_empty() {
+            eprintln!("bt3: texture pack: {} replacement textures", idx.len());
         }
-        out
+        idx
     })
 }
 
-/// Which pack a quality uses and how much its pictures are made smaller: (pack, halvings).
-fn source(quality: i32) -> Option<(usize, u32)> {
-    let p = packs();
-    let has = |k: usize| !p[k].files.is_empty();
+/// Whether a pack is there.
+pub fn available() -> bool {
+    !pack().is_empty()
+}
+
+/// How many times a quality makes the pack's pictures smaller (None: the PS2's own textures).
+fn halvings(quality: i32) -> Option<u32> {
     match quality {
-        3 if has(1) => Some((1, 0)),
-        3 if has(0) => Some((0, 0)),
-        2 if has(0) => Some((0, 0)),
-        2 if has(1) => Some((1, 1)),
-        1 if has(0) => Some((0, 1)),
-        1 if has(1) => Some((1, 2)),
+        1 => Some(1),
+        2 | 3 => Some(0),
         _ => None,
     }
 }
 
-/// Whether any pack is there.
-pub fn available() -> bool {
-    packs().iter().any(|p| !p.files.is_empty())
-}
-
-/// The texture's files, as found for one texture: the file (or, when the palette hash matches none of them, all
-/// of them: the worker keeps the one whose colours are nearest the original's), and the job's key.
+/// A texture's replacement file, as found.
 pub struct Found {
     pub key: u64,
-    pub files: Vec<PathBuf>,
+    pub file: PathBuf,
     pub halvings: u32,
-    choice: (u64, u64),
-    /// `files` is what to use as it is: one picture, or two grey halves in order (red / green, blue / alpha)
-    decided: bool,
 }
 
-/// What was chosen for a texture and palette whose palette hash matched none (by colour, on the workers): one
-/// file, or two grey halves in order.
-static CHOSEN: Mutex<Option<HashMap<(u64, u64), Vec<PathBuf>>>> = Mutex::new(None);
+/// What a texture is, for finding its replacement: its place and format in GS memory (as TEX0 says), the
+/// texture's raw blocks there (host/gs Gs::block), and its palette in index order (32-bit entries).
+pub struct Query<'a> {
+    pub psm: u32,
+    pub tw: u32,
+    pub th: u32,
+    pub tcc: u32,
+    pub cpsm: u32,
+    /// the 256-byte blocks over the rectangle, in row-major block order
+    pub blocks: &'a [u8],
+    /// the palette (256 or 16 entries, index order); empty without one
+    pub clut: &'a [u32],
+}
 
-/// The file replacing a texture (its indices and palette), for a texture quality.
-pub fn lookup(quality: i32, idx: &[u8], w: usize, h: usize, bits: u32, pal: &[[u8; 4]]) -> Option<Found> {
-    let (pack, halvings) = source(quality)?;
-    let tex = texture_hash(idx, w, h, bits);
-    let files = packs()[pack].files.get(&tex)?;
-    let tlut = palette_hash(idx, pal);
-    let choice = (tex, tlut);
-    let key = xxh64(&[tex.to_le_bytes(), tlut.to_le_bytes(), (halvings as u64 | (pack as u64) << 8).to_le_bytes()].concat(), 0);
-    let decided = if files.len() == 1 {
-        Some(vec![files[0].1.clone()])
-    } else if let Some(f) = files.iter().find(|f| f.0 == tlut) {
-        Some(vec![f.1.clone()])
+/// The block a format's texture is made of, in pixels (None: a format packs are not made for here).
+pub fn block_size(psm: u32) -> Option<(u32, u32)> {
+    match psm {
+        0x13 => Some((16, 16)),
+        0x14 => Some((32, 16)),
+        0x00 => Some((8, 8)),
+        _ => None,
+    }
+}
+
+/// The file replacing a texture, for a texture quality.
+pub fn lookup(quality: i32, q: &Query) -> Option<Found> {
+    let halvings = halvings(quality)?;
+    let idx = pack();
+    if idx.is_empty() {
+        return None;
+    }
+    let (bw, bh) = block_size(q.psm)?;
+    if q.tw < bw || q.th < bh {
+        return None; // smaller than a block: hashed another way there, which is not worked out
+    }
+    let tex = crate::host::xxh3::hash64(q.blocks);
+    let lg = |v: u32| (0..31).find(|&l| (1u32 << l) >= v).unwrap_or(31);
+    let (wl, hl) = (lg(q.tw), lg(q.th));
+    let bits = q.psm | wl << 6 | hl << 10 | (q.tcc & 1) << 14;
+    let file = if q.psm == 0x00 {
+        idx.get(&(tex, 0, bits, false))?
     } else {
-        CHOSEN.lock().unwrap().as_ref().and_then(|m| m.get(&choice).cloned())
-    };
-    Some(match decided {
-        Some(files) => Found { key, files, halvings, choice, decided: true },
-        None => Found { key, files: files.iter().map(|f| f.1.clone()).collect(), halvings, choice, decided: false },
-    })
-}
-
-/// A small summary of a picture's look: the average red, green, blue and alpha (0..1) of 8 x 8 cells.
-fn thumb(w: usize, h: usize, px: impl Fn(usize, usize) -> [f32; 4]) -> Vec<f32> {
-    let mut out = vec![0f32; 8 * 8 * 4];
-    for cy in 0..8 {
-        for cx in 0..8 {
-            let (x0, x1, y0, y1) = (cx * w / 8, ((cx + 1) * w / 8).max(cx * w / 8 + 1), cy * h / 8, ((cy + 1) * h / 8).max(cy * h / 8 + 1));
-            let mut acc = [0f32; 4];
-            let step = ((x1 - x0) * (y1 - y0) / 64).max(1);
-            let mut n = 0f32;
-            let mut k = 0;
-            for y in y0..y1 {
-                for x in x0..x1 {
-                    k += 1;
-                    if k % step != 0 {
-                        continue;
-                    }
-                    let p = px(x, y);
-                    for c in 0..4 {
-                        acc[c] += p[c];
-                    }
-                    n += 1.0;
+        if q.cpsm != 0 {
+            return None; // 16-bit palettes are expanded with TEXA there: not seen in this game
+        }
+        // the indices the texture uses, from its blocks
+        let (mut lo, mut hi) = (255usize, 0usize);
+        for &b in q.blocks {
+            if q.psm == 0x13 {
+                lo = lo.min(b as usize);
+                hi = hi.max(b as usize);
+            } else {
+                for v in [(b & 15) as usize, (b >> 4) as usize] {
+                    lo = lo.min(v);
+                    hi = hi.max(v);
                 }
             }
-            let o = (cy * 8 + cx) * 4;
-            for c in 0..4 {
-                out[o + c] = acc[c] / n.max(1.0);
-            }
         }
-    }
-    out
-}
-
-/// The summary of an original texture (RGBA words with the GS's alpha, 0x80 opaque).
-pub fn thumb_of_original(px: &[u32], w: usize, h: usize) -> Vec<f32> {
-    thumb(w, h, |x, y| {
-        let v = px[y * w + x];
-        [(v & 255) as f32 / 255.0, (v >> 8 & 255) as f32 / 255.0, (v >> 16 & 255) as f32 / 255.0, ((v >> 24) as f32 / 128.0).min(1.0)]
-    })
-}
-
-/// The summary of a pack's picture, its alpha as it is (0..1 of 255).
-fn thumb_of_picture(p: &Picture) -> Vec<f32> {
-    thumb(p.w as usize, p.h as usize, |x, y| {
-        let o = (y * p.w as usize + x) * 4;
-        [p.rgba[o] as f32 / 255.0, p.rgba[o + 1] as f32 / 255.0, p.rgba[o + 2] as f32 / 255.0, p.rgba[o + 3] as f32 / 255.0]
-    })
-}
-
-/// Its alpha's scale to the GS's (0x80 opaque): a picture whose alpha stays at or under 130 has the PS2's alpha
-/// already (some files of the packs do); else 255 is opaque.
-fn alpha_scale_of(p: &Picture) -> f32 {
-    let amax = p.rgba.chunks(4).map(|q| q[3]).max().unwrap_or(255);
-    if amax <= 130 {
-        1.0
-    } else {
-        0.5
-    }
-}
-
-fn dist(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b).map(|(x, y)| (x - y) * (x - y)).sum()
+        let bytes = |c: &[u32]| c.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>();
+        let used = crate::host::xxh3::hash64(&bytes(&q.clut[lo.min(hi)..=hi]));
+        let whole = crate::host::xxh3::hash64(&bytes(q.clut));
+        if std::env::var_os("BT3_TEX_LOG").is_some() {
+            let f = idx.get(&(tex, used, bits, true)).or_else(|| idx.get(&(tex, whole, bits, true)));
+            eprintln!("texpack: {} {}x{} {:x}-{:x}-{:08x}", if f.is_some() { "found  " } else { "missing" }, q.tw, q.th, tex, used, bits);
+        }
+        idx.get(&(tex, used, bits, true)).or_else(|| idx.get(&(tex, whole, bits, true)))?
+    };
+    let key = crate::host::xxh3::hash64(file.to_string_lossy().as_bytes()) ^ halvings as u64;
+    Some(Found { key, file: file.clone(), halvings })
 }
 
 // ------------------------------------------------------------------------------------------------ DDS
@@ -309,8 +183,7 @@ pub struct Picture {
     pub w: u32,
     pub h: u32,
     pub rgba: Vec<u8>,
-    /// what its alpha is multiplied by to give the GS's (0x80 opaque): 0.5 for a Wii picture (255 opaque), 1 for
-    /// one put together from two halves (`merge_halves`), whose alpha is the PS2's own
+    /// what its alpha is multiplied by to give the GS's (0x80 opaque): 1, a PCSX2 pack's alpha is the GS's own
     pub alpha_scale: f32,
 }
 
@@ -438,7 +311,7 @@ pub fn dds_decode(data: &[u8]) -> Option<Picture> {
     } else {
         return None;
     }
-    Some(Picture { w, h, rgba, alpha_scale: 0.5 })
+    Some(Picture { w, h, rgba, alpha_scale: 1.0 })
 }
 
 /// Half the size (the average of each 2 x 2).
@@ -460,108 +333,24 @@ fn halve(p: Picture) -> Picture {
 }
 
 /// Grey (its colour channels equal, near enough).
-fn grey(p: &Picture) -> bool {
-    let n = (p.w * p.h) as usize;
-    let step = (n / 4096).max(1);
-    let mut sat = 0u64;
-    let mut k = 0u64;
-    for i in (0..n).step_by(step) {
-        let q = &p.rgba[i * 4..i * 4 + 3];
-        sat += (*q.iter().max().unwrap() - *q.iter().min().unwrap()) as u64;
-        k += 1;
-    }
-    sat < 10 * k
-}
 
-/// A texture whose palette has see-through colours is often, on the Wii, two lookups of the same indices in two
-/// intensity / alpha palettes (the Wii has no palette with 8 bits of each of red, green, blue and alpha): one
-/// gives red (intensity) and green (alpha), the other blue and the alpha (the PS2's, 0x80 opaque). A pack has
-/// both pictures, grey, under two palette hashes; `choose` tells which is which from the original.
-fn merge_halves(rg: &Picture, ba: &Picture) -> Option<Picture> {
-    if rg.w != ba.w || rg.h != ba.h {
+/// A PNG file (the pack's alpha as it is).
+fn png_decode(data: &[u8]) -> Option<Picture> {
+    let p = crate::host::assets::png_read(data).ok()?;
+    let rgba = match &p.palette {
+        Some(pal) => p.data.iter().flat_map(|&i| pal.get(i as usize).copied().unwrap_or([0; 4])).collect(),
+        None => p.data,
+    };
+    if rgba.len() != (p.w * p.h * 4) as usize {
         return None;
     }
-    let mut rgba = vec![0u8; rg.rgba.len()];
-    for i in 0..(rg.w * rg.h) as usize {
-        rgba[i * 4] = rg.rgba[i * 4];
-        rgba[i * 4 + 1] = rg.rgba[i * 4 + 3];
-        rgba[i * 4 + 2] = ba.rgba[i * 4];
-        rgba[i * 4 + 3] = ba.rgba[i * 4 + 3];
-    }
-    Some(Picture { w: rg.w, h: rg.h, rgba, alpha_scale: 1.0 })
-}
-
-/// The picture for a job: the one file, the two halves in order, or the best match among the texture's files
-/// (each picture as it is, and each two grey ones put together), judged by the original's summary.
-fn choose(f: &Found, thumb: &[f32]) -> Option<Picture> {
-    let pics: Vec<(Picture, &PathBuf)> = f
-        .files
-        .iter()
-        .filter_map(|path| match std::fs::read(path).ok().and_then(|d| dds_decode(&d)) {
-            Some(p) => Some((p, path)),
-            None => {
-                eprintln!("bt3: texture pack: cannot read {}", path.display());
-                None
-            }
-        })
-        .collect();
-    if f.decided || pics.len() < 2 || thumb.len() != 8 * 8 * 4 {
-        if f.decided && pics.len() == 2 {
-            return merge_halves(&pics[0].0, &pics[1].0);
-        }
-        return pics.into_iter().next().map(|(mut p, _)| {
-            p.alpha_scale = alpha_scale_of(&p);
-            p
-        });
-    }
-    let thumbs: Vec<Vec<f32>> = pics.iter().map(|p| thumb_of_picture(&p.0)).collect();
-    let scales: Vec<f32> = pics.iter().map(|p| alpha_scale_of(&p.0)).collect();
-    let greys: Vec<bool> = pics.iter().map(|p| grey(&p.0)).collect();
-    // (error, first, second): second = Some for two halves
-    let mut best: Option<(f32, usize, Option<usize>)> = None;
-    let mut consider = |e: f32, i: usize, j: Option<usize>| {
-        if best.map_or(true, |b| e < b.0) {
-            best = Some((e, i, j));
-        }
-    };
-    for (i, t) in thumbs.iter().enumerate() {
-        // alpha in the original's units (1 = opaque)
-        let k = scales[i] * 255.0 / 128.0;
-        let t: Vec<f32> = t.chunks(4).flat_map(|q| [q[0], q[1], q[2], (q[3] * k).min(1.0)]).collect();
-        consider(dist(&t, thumb), i, None);
-    }
-    for i in 0..pics.len() {
-        for j in 0..pics.len() {
-            if i == j || !greys[i] || !greys[j] {
-                continue;
-            }
-            let (x, y) = (&thumbs[i], &thumbs[j]);
-            let t: Vec<f32> = (0..64).flat_map(|c| [x[c * 4], x[c * 4 + 3], y[c * 4], (y[c * 4 + 3] * 255.0 / 128.0).min(1.0)]).collect();
-            consider(dist(&t, thumb), i, Some(j));
-        }
-    }
-    let (e, i, j) = best?;
-    if std::env::var("BT3_TEX_LOG").is_ok() {
-        eprintln!("bt3: texture pack: chose {:?} {:?} (error {e:.3}) of {} files; thumb0 {:?}", pics[i].1.file_name(), j.map(|j| pics[j].1.file_name()), pics.len(), &thumb[..4]);
-    }
-    let chosen: Vec<PathBuf> = std::iter::once(pics[i].1.clone()).chain(j.map(|j| pics[j].1.clone())).collect();
-    CHOSEN.lock().unwrap().get_or_insert_with(HashMap::new).insert(f.choice, chosen);
-    match j {
-        Some(j) => merge_halves(&pics[i].0, &pics[j].0),
-        None => {
-            let mut p = pics.into_iter().nth(i)?.0;
-            p.alpha_scale = scales[i];
-            Some(p)
-        }
-    }
+    Some(Picture { w: p.w, h: p.h, rgba, alpha_scale: 1.0 })
 }
 
 // ------------------------------------------------------------------------------------------------ loading
 /// A replacement asked for (the renderer's key for it) and the result.
 pub struct Job {
     pub found: Found,
-    /// the original's summary (to choose between files)
-    pub thumb: Vec<f32>,
 }
 
 pub struct Done {
@@ -589,7 +378,9 @@ fn workers() -> &'static Workers {
                     Err(_) => return,
                 };
                 let f = &job.found;
-                let mut picture = choose(f, &job.thumb);
+                let data = std::fs::read(&f.file).ok();
+                let is_png = f.file.extension().map_or(false, |e| e.eq_ignore_ascii_case("png"));
+                let mut picture = data.as_deref().and_then(|d| if is_png { png_decode(d) } else { dds_decode(d) });
                 for _ in 0..f.halvings {
                     picture = picture.map(halve);
                 }
@@ -617,10 +408,10 @@ pub fn finished() -> Vec<Done> {
 mod tests {
     use super::*;
     #[test]
-    fn xxh64_vectors() {
-        assert_eq!(xxh64(b"", 0), 0xEF46DB3751D8E999);
-        assert_eq!(xxh64(b"a", 0), 0xD24EC4F1A98C6E5B);
-        assert_eq!(xxh64(b"abc", 0), 0x44BC2CF5AD770999);
-        assert_eq!(xxh64(b"Nobody inspects the spammish repetition", 0), 0xFBCEA83C8A378BF1);
+    fn names() {
+        assert_eq!(parse_name("1dd4c76113969303-56e3d4469d2ad392-00005e54.dds"), Some((0x1dd4c76113969303, 0x56e3d4469d2ad392, 0x5e54, true)));
+        assert_eq!(parse_name("4e0ee2ff8b0877f-156cb9cc3d4e064-00005554.DDS"), Some((0x4e0ee2ff8b0877f, 0x156cb9cc3d4e064, 0x5554, true)));
+        assert_eq!(parse_name("abc-00004000.png"), Some((0xabc, 0, 0x4000, false)));
+        assert_eq!(parse_name("tex1_64x64_abc_def_9.dds"), None);
     }
 }

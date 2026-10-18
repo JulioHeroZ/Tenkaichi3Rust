@@ -17,7 +17,7 @@ Baixe **`Instalar Tenkaichi 3.exe`** (na página de versões do projeto) e abra.
    * **Jogar:** o jogo pronto, com os dados em poucos pacotes, como um jogo de PC;
    * **Desenvolvedor:** o mesmo jogo, com todos os arquivos do jogo editáveis (PNG, glTF, WAV, JSON), para mods;
 3. escolha a pasta (padrão: `C:\Program Files (x86)\Tenkaichi 3`);
-4. se quiser, marque as **texturas HD** (1080p e/ou 4K: veja abaixo) e clique em **Instalar**.
+4. se quiser, marque as **texturas HD** (veja abaixo) e clique em **Instalar**.
 
 A barra de progresso mostra cada passo. A primeira instalação demora bastante, e pode ser cancelada e retomada:
 os passos prontos são pulados. Os dois tipos criam `Tenkaichi3.exe` e atalhos na área de trabalho e no menu
@@ -37,14 +37,12 @@ O que o instalador faz:
 8. se marcadas, baixa e extrai as texturas HD.
 
 **Imagem:** o jogo abre em **16:9** por padrão. Nas lutas a câmera mostra mais dos lados, sem esticar nada, e a
-interface fica nas bordas. Os menus, desenhados para 4:3, aparecem no meio sobre uma cópia desfocada de si mesmos.
+interface fica nas bordas. Os menus, desenhados para 4:3, são esticados para ocupar a tela.
 
-**Texturas HD:** o remaster de texturas do canal **PLAYANDO**
-([vídeo](https://www.youtube.com/watch?v=rJW7idQDqVc)), feito para a versão de Wii no Dolphin, funciona aqui: as
-texturas do Wii são as mesmas do PS2, índice por índice, então o jogo acha cada arquivo do pacote pelo nome que o
-Dolphin dá. O instalador baixa os pacotes dos links do autor no Google Drive (1080p: 1 GB, 4K: 3,4 GB) ou usa um
-`.rar` ou uma pasta que você já tenha. Eles ficam em `assets\textures\2x` e `assets\textures\4x` da pasta do jogo.
-Os pacotes não fazem parte deste projeto ([docs/texture-packs.md](docs/texture-packs.md)).
+**Texturas HD:** pacotes de texturas feitos para o PCSX2 funcionam como estão (o jogo acha cada arquivo pelo nome
+que o PCSX2 dá, calculado sobre os dados do PS2). O instalador baixa um pacote completo do MediaFire (2 GB) ou usa
+o `.rar` ou uma pasta que você já tenha. Ele fica em `assets\textures\pcsx2` da pasta do jogo.
+O pacote não faz parte deste projeto ([docs/texture-packs.md](docs/texture-packs.md)).
 
 **Controles e opções:**
 * **Teclado:**

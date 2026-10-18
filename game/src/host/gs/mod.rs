@@ -401,6 +401,30 @@ impl Gs {
         self.vram_rw(bp, bw, psm, x, y, None)
     }
 
+    /// The raw 256 bytes of GS memory of the block holding pixel (x, y) of a texture (PSMT8, PSMT4, else PSMCT32),
+    /// appended to `out` (host/texpack.rs hashes them as PCSX2 does).
+    pub(crate) fn block_into(&self, bp: u32, bw: u32, psm: u32, x: u32, y: u32, out: &mut Vec<u8>) {
+        let bw = if bw == 0 { 1 } else { bw };
+        let bn = match psm {
+            0x13 => bp
+                .wrapping_add(((y >> 1) & !0x1F).wrapping_mul(bw >> 1))
+                .wrapping_add((x >> 2) & !0x1F)
+                .wrapping_add(BLOCK32[((y >> 4) & 3) as usize][((x >> 4) & 7) as usize]),
+            0x14 => bp
+                .wrapping_add(((y >> 2) & !0x1F).wrapping_mul(bw >> 1))
+                .wrapping_add((x >> 2) & !0x1F)
+                .wrapping_add(BLOCK16[((y >> 4) & 7) as usize][((x >> 5) & 3) as usize]),
+            _ => bp
+                .wrapping_add((y & !0x1F).wrapping_mul(bw))
+                .wrapping_add((x >> 1) & !0x1F)
+                .wrapping_add(BLOCK32[((y >> 3) & 3) as usize][((x >> 3) & 7) as usize]),
+        };
+        let w = ((bn & 0x3FFF) << 6) as usize;
+        for v in &self.vram[w..w + 64] {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+
     fn target_index(&mut self, fbp: u32) -> usize {
         if let Some(i) = self.targets.iter().position(|t| t.fbp == fbp) {
             return i;

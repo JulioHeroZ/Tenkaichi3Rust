@@ -17,6 +17,7 @@ pub mod saves;
 pub mod title;
 pub mod options;
 pub mod texpack;
+pub mod xxh3;
 pub mod settings;
 pub mod movie;
 pub mod mpeg2;
