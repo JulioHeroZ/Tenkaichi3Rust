@@ -3,6 +3,22 @@
 O registro do trabalho, do mais recente ao mais antigo. A organização atual está em
 [project-layout.md](project-layout.md).
 
+
+## Atualizar sem refazer, e teste da build (Claude, 18/10/2026)
+
+- A 0.2.0 saía com a imagem da janela quebrada (o centro de uma cor só): o `uvScale` do shader de apresentação era
+  posto com o shader do fundo em uso. Os testes não pegaram porque, sem janela, `present()` não desenhava nada;
+  agora `BT3_SHOT_WINDOW=LxA` salva a imagem como a janela a mostra, pelo mesmo código (`draw_window`).
+- `tools/install/testar_build.py` (`testar_build.cmd`): compila o jogo como o instalador leva, joga a tela inicial e
+  uma luta numa janela escondida (`BT3_HIDDEN`, `BT3_EXIT_AT`) e falha se o jogo der erro ou se o centro da imagem
+  for de uma cor só. `gerar_instalador.cmd` testa antes de empacotar, em segundo plano.
+- Atualização: `assets/instalacao.txt` guarda a versão dos dados (`instalar.data_version`: hash das ferramentas de
+  conversão, de `pack.py`, do export e do layout das tabelas) e o tipo. Com a mesma versão e o mesmo tipo, o
+  instalador só troca os programas e mantém os dados (sem ISO). A janela acha a instalação anterior pelo registro,
+  mostra "Atualizar" e a caixa "Refazer tudo do zero". O ícone, numa atualização do jogador, vem do `.ico` já feito.
+- Na nuvem: o teste da build passou (tela inicial e luta); a decisão atualizar/instalar conferida com pastas falsas.
+  A janela foi conferida só pelo compilador.
+
 ## Desinstalador (Claude, 18/10/2026)
 
 - `Desinstalar.exe` na pasta do jogo (`tools/install/src/bin/desinstalar.rs`): confirma, pergunta se apaga os saves,

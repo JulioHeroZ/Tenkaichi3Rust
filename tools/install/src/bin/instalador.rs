@@ -233,6 +233,11 @@ const ID_CLOSE: isize = 108;
 const ID_START: isize = 109;
 const ID_TEX: [isize; 2] = [110, 111];
 const ID_TEX_PICK: [isize; 2] = [112, 113];
+const ID_FRESH: isize = 114;
+const EN_CHANGE: usize = 0x300;
+/// the version of the data this installer makes (empacotar.py: instalar.data_version); an installation that has it
+/// (assets\instalacao.txt) is updated: only the programs are replaced, no disc image needed
+const DATA_VERSION: Option<&str> = option_env!("BT3_DADOS_VERSAO");
 const WM_OUTPUT: u32 = WM_APP + 1;
 const WM_FINISHED: u32 = WM_APP + 2;
 
@@ -262,6 +267,8 @@ struct H {
     install: HWND,
     close: HWND,
     start: HWND,
+    /// "Refazer tudo do zero": shown when the folder can be updated
+    fresh: HWND,
     /// the texture packs (2x, 4x): check box, "Já tenho..." button, where it comes from
     tex: [HWND; 2],
     tex_pick: [HWND; 2],
@@ -284,12 +291,14 @@ struct State {
     child: Option<u32>,
     /// a texture pack the user already has (.rar or folder), instead of the download
     tex_file: [Option<String>; 2],
+    /// the folder holds this installer's data: install updates it (unless "Refazer tudo do zero")
+    update: bool,
 }
 
 static HANDLES: std::sync::OnceLock<H> = std::sync::OnceLock::new();
 static DPI: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(96);
 static MAIN: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
-static STATE: Mutex<State> = Mutex::new(State { running: false, stage: 0.0, done: None, child: None, tex_file: [None, None] });
+static STATE: Mutex<State> = Mutex::new(State { running: false, stage: 0.0, done: None, child: None, tex_file: [None, None], update: false });
 static OUTPUT: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
 static PAPER_BRUSH: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 
@@ -499,6 +508,8 @@ unsafe fn create(hwnd: HWND) {
     SendMessageW(log, EM_SETLIMITTEXT, 0, 0);
     let start = control(hwnd, "BUTTON", "Jogar agora", WS_TABSTOP | BS_PUSHBUTTON, 0, 324, 684, 112, 32, ID_START, font);
     let install = control(hwnd, "BUTTON", "Instalar", WS_TABSTOP | BS_DEFPUSHBUTTON, 0, 444, 684, 104, 32, ID_INSTALL, bold);
+    let fresh = control(hwnd, "BUTTON", "Refazer tudo do zero", WS_TABSTOP | BS_AUTOCHECKBOX, 0, 24, 689, 280, 22, ID_FRESH, font);
+    ShowWindow(fresh, 0);
     let close = control(hwnd, "BUTTON", "Fechar", WS_TABSTOP | BS_PUSHBUTTON, 0, 556, 684, 100, 32, ID_CLOSE, font);
     ShowWindow(start, 0);
     SendMessageW(play, BM_SETCHECK, 1, 0);
@@ -515,6 +526,7 @@ unsafe fn create(hwnd: HWND) {
         install,
         close,
         start,
+        fresh,
         tex,
         tex_pick,
         tex_from,
@@ -527,6 +539,74 @@ unsafe fn create(hwnd: HWND) {
         dpi,
     });
     let _ = (bold, mono);
+    if let Some(found) = installed_dir() {
+        set_text(dir, &found);
+    }
+    check_existing();
+}
+
+/// The folder of a game installed before (InstallLocation in Settings > Apps, instalar.py register).
+fn installed_dir() -> Option<String> {
+    let key = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Tenkaichi3Rust";
+    for root in ["HKLM", "HKCU"] {
+        let out = hide(&mut Command::new("reg")).args(["query", &format!("{root}\\{key}"), "/v", "InstallLocation"]).output().ok()?;
+        let text = String::from_utf8_lossy(&out.stdout).to_string();
+        if let Some(line) = text.lines().find(|l| l.contains("InstallLocation")) {
+            if let Some((_, path)) = line.split_once("REG_SZ") {
+                let path = path.trim();
+                if Path::new(path).join("assets").is_dir() {
+                    return Some(path.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Whether the chosen folder already has this installer's data for the chosen kind (as instalar.py up_to_date):
+/// then Instalar becomes Atualizar, the disc image is not needed, and "Refazer tudo do zero" shows.
+fn check_existing() {
+    let u = h();
+    if u.dir == 0 || state(|s| s.running) {
+        return;
+    }
+    let dir = PathBuf::from(text(u.dir).trim().trim_matches('"'));
+    let assets = dir.join("assets");
+    let stamp: std::collections::HashMap<String, String> = std::fs::read_to_string(assets.join("instalacao.txt"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.split_once('=').map(|(k, v)| (k.trim().to_string(), v.trim().to_string())))
+        .collect();
+    let dev = is_dev();
+    let mode = if dev { "desenvolvedor" } else { "jogador" };
+    let have = if dev {
+        assets.join("files").is_dir()
+    } else {
+        std::fs::read_dir(&assets).map(|r| r.flatten().any(|e| e.path().extension().map_or(false, |x| x == "bt3pak"))).unwrap_or(false)
+    };
+    let same = have && DATA_VERSION.is_some() && stamp.get("dados").map(String::as_str) == DATA_VERSION
+        && stamp.get("modo").map(String::as_str) == Some(mode);
+    let fresh = unsafe { SendMessageW(u.fresh, BM_GETCHECK, 0, 0) == 1 };
+    state(|s| s.update = same && !fresh);
+    unsafe { ShowWindow(u.fresh, same as i32) };
+    let installed = |i: usize| assets.join("textures").join(["2x", "4x"][i]).is_dir();
+    for i in 0..2 {
+        if state(|s| s.tex_file[i].is_none()) {
+            set_text(u.tex_from[i], if installed(i) { "já instaladas nesta pasta" } else { "baixado do Google Drive do autor" });
+        }
+    }
+    if same && !fresh {
+        set_text(u.install, "Atualizar");
+        set_text(u.status, &format!("Já instalado aqui{}: só os programas serão trocados, sem a imagem do disco (segundos).",
+                                     stamp.get("versao").map(|v| format!(" (versão {v})")).unwrap_or_default()));
+    } else {
+        set_text(u.install, "Instalar");
+        set_text(u.status, if same { "Vai refazer tudo a partir da imagem do disco." } else if have {
+            "Há um jogo nesta pasta de outra versão dos dados: vai ser refeito a partir da imagem do disco."
+        } else {
+            "Escolha a imagem do disco e clique em Instalar."
+        });
+    }
 }
 
 unsafe fn paint(hwnd: HWND) {
@@ -667,8 +747,6 @@ unsafe fn pick_dir(hwnd: HWND) {
     }
 }
 
-fn mode_changed() {}
-
 fn message(hwnd: HWND, text: &str, kind: u32) -> i32 {
     unsafe { MessageBoxW(hwnd, w(text).as_ptr(), w("Instalar Tenkaichi 3").as_ptr(), kind) }
 }
@@ -753,7 +831,9 @@ fn start_install(hwnd: HWND) {
         .filter(|&i| unsafe { SendMessageW(u.tex[i], BM_GETCHECK, 0, 0) == 1 })
         .map(|i| (["--texturas-2x", "--texturas-4x"][i], files[i].clone().unwrap_or_else(|| "baixar".into())))
         .collect();
-    if !Path::new(&iso).is_file() {
+    let update = state(|s| s.update);
+    let fresh = unsafe { SendMessageW(u.fresh, BM_GETCHECK, 0, 0) == 1 };
+    if !update && !Path::new(&iso).is_file() {
         message(hwnd, "Escolha a imagem do disco (.iso) do Tenkaichi 3.", MB_OK | MB_ICONWARNING);
         return;
     }
@@ -766,7 +846,7 @@ fn start_install(hwnd: HWND) {
         s.stage = 0.0;
     });
     unsafe {
-        for c in [u.iso, u.iso_browse, u.play, u.dev, u.dir, u.dir_browse, u.install, u.tex[0], u.tex[1], u.tex_pick[0], u.tex_pick[1]] {
+        for c in [u.iso, u.iso_browse, u.play, u.dev, u.dir, u.dir_browse, u.install, u.tex[0], u.tex[1], u.tex_pick[0], u.tex_pick[1], u.fresh] {
             EnableWindow(c, 0);
         }
         SendMessageW(u.progress, PBM_SETPOS, 0, 0);
@@ -786,7 +866,13 @@ fn start_install(hwnd: HWND) {
             }
             let py = python(&root, &push)?;
             let mut c = Command::new(py);
-            c.arg("-u").arg(root.join("tools").join("install").join("instalar.py")).arg(&iso).current_dir(&root);
+            c.arg("-u").arg(root.join("tools").join("install").join("instalar.py")).current_dir(&root);
+            if !iso.is_empty() {
+                c.arg(&iso);
+            }
+            if fresh {
+                c.arg("--do-zero");
+            }
             c.args(["--modo", if dev { "desenvolvedor" } else { "jogador" }, "--destino", &dir]);
             for (flag, from) in &textures {
                 c.arg(flag).arg(from);
@@ -815,6 +901,8 @@ fn progress_of(line: &str, dev: bool) -> Option<(f64, String)> {
             Some("5/6") => stage(780.0, "Recursos de PC e pastas (5 de 6)"),
             Some("6/6") => stage(if dev { 950.0 } else { 870.0 }, "Vídeos (6 de 6)"),
             _ if rest.starts_with("empacot") => stage(900.0, "Empacotando os dados do jogo"),
+            _ if rest.starts_with("atualizando") => stage(300.0, "Atualizando: os dados do jogo já estão em dia"),
+            _ if rest.starts_with("instalando o jogo") => stage(if state(|s| s.update) { 600.0 } else { 890.0 }, "Instalando o programa"),
             _ if rest.starts_with("texturas HD 1080p") => stage(940.0, "Texturas HD 1080p"),
             _ if rest.starts_with("texturas HD 4K") => stage(965.0, "Texturas HD 4K"),
             _ if rest.starts_with("compilando") => None,
@@ -868,12 +956,17 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: usize, lp: isize) -> isize 
             }
             WM_CTLCOLOREDIT => DefWindowProcW(hwnd, msg, wp, lp),
             WM_COMMAND => {
+                if (wp >> 16) & 0xFFFF == EN_CHANGE && (wp & 0xFFFF) as isize == ID_DIR {
+                    check_existing();
+                    return 0;
+                }
                 match (wp & 0xFFFF) as isize {
+                    ID_FRESH => check_existing(),
                     ID_ISO_BROWSE => pick_iso(hwnd),
                     ID_DIR_BROWSE => pick_dir(hwnd),
                     id if id == ID_TEX_PICK[0] => pick_tex(hwnd, 0),
                     id if id == ID_TEX_PICK[1] => pick_tex(hwnd, 1),
-                    ID_PLAY | ID_DEV => mode_changed(),
+                    ID_PLAY | ID_DEV => check_existing(),
                     ID_INSTALL => start_install(hwnd),
                     ID_START => {
                         if let Some(p) = state(|s| s.done.clone()) {
@@ -916,7 +1009,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: usize, lp: isize) -> isize 
                     ShowWindow(u.start, 1);
                 } else {
                     set_text(u.status, "A instalação parou. Veja o motivo abaixo; ao instalar de novo, os passos prontos são pulados.");
-                    for c in [u.iso, u.iso_browse, u.play, u.dev, u.dir, u.dir_browse, u.install, u.tex[0], u.tex[1], u.tex_pick[0], u.tex_pick[1]] {
+                    for c in [u.iso, u.iso_browse, u.play, u.dev, u.dir, u.dir_browse, u.install, u.tex[0], u.tex[1], u.tex_pick[0], u.tex_pick[1], u.fresh] {
                         EnableWindow(c, 1);
                     }
                 }

@@ -9,6 +9,8 @@ The file is the installer's window (tools/install/src/bin/instalador.rs) with it
     tools/               tools/install, tools/assets and tables_from_elf.py
     bin/                 Tenkaichi3.exe (the game), desinstalar.exe, bt3-install.exe, SDL3.dll, libiconv-2.dll
     game/src/gen/data.rs where the game's tables go (read by tables_from_elf.py)
+    dados.versao         the version of the data the tools make (instalar.data_version): an installation with the
+                         same one is updated, not made again; the window knows it too (BT3_DADOS_VERSAO when built)
 
 Run on Windows from the project, with Rust and Python installed (it downloads the embeddable Python and numpy):
 
@@ -16,6 +18,9 @@ Run on Windows from the project, with Rust and Python installed (it downloads th
 """
 import io, os, shutil, struct, subprocess, sys, urllib.request, zipfile, zlib
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import instalar
 
 ROOT = Path(__file__).resolve().parents[2]
 PYTHON = "3.12.7"
@@ -47,8 +52,10 @@ def main():
         raise SystemExit("O instalador é para Windows: rode no Windows.")
     # the programs, without debug information (smaller)
     target = ROOT / "target" / "pacote"
+    version = instalar.data_version(ROOT)
+    print("versão dos dados: %s" % version, flush=True)
     env = dict(os.environ, CARGO_TARGET_DIR=str(target), CARGO_PROFILE_RELEASE_DEBUG="false",
-               CARGO_PROFILE_RELEASE_STRIP="true")
+               CARGO_PROFILE_RELEASE_STRIP="true", BT3_DADOS_VERSAO=version)
     run(["cargo", "build", "--release", "-p", "bt3-original", "--bin", "tenkaichi3"], env=env)
     run(["cargo", "build", "--release", "-p", "bt3-install", "--bins"], env=env)
     if STAGE.exists():
@@ -63,6 +70,7 @@ def main():
                 "tools/translate/c2rs/tables_from_elf.py", "game/src/gen/data.rs", "LICENSE"]:
         (STAGE / rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / rel, STAGE / rel)
+    (STAGE / "dados.versao").write_text(version + "\n")
     (STAGE / "tools" / "assets").mkdir(parents=True, exist_ok=True)
     for f in (ROOT / "tools" / "assets").glob("*.py"):
         shutil.copyfile(f, STAGE / "tools" / "assets" / f.name)

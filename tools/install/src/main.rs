@@ -172,7 +172,7 @@ fn main() -> io::Result<()> {
     }
     if args.len() != 4 || args[1] != "export" {
         eprintln!("uso: bt3-install export <disco extraído> <assets>");
-        eprintln!("     bt3-install icone <zs3usop.m2v> <saída .ico> [programa.exe...]");
+        eprintln!("     bt3-install icone <zs3usop.m2v | ícone.ico> <saída .ico> [programa.exe...]");
         eprintln!("     bt3-install icone-instalador <programa.exe>");
         return Err(invalid("unknown command"));
     }
@@ -269,8 +269,14 @@ fn main() -> io::Result<()> {
 
 /// The game's icon from the opening of the user's disc (bt3_install::icon): an .ico, and the icon of the programs.
 fn icone(args: &[std::ffi::OsString]) -> io::Result<()> {
-    let (rgba, side) = bt3_install::icon::logo(fs::read(&args[0])?).map_err(|e| invalid(&e))?;
-    let images = bt3_install::icon::images(&rgba, side);
+    // from the opening's video, or from the .ico made before (an update: the video is in the packs)
+    let source = fs::read(&args[0])?;
+    let images = if Path::new(&args[0]).extension().map_or(false, |e| e.eq_ignore_ascii_case("ico")) {
+        bt3_install::icon::read_ico(&source).map_err(|e| invalid(&e))?
+    } else {
+        let (rgba, side) = bt3_install::icon::logo(source).map_err(|e| invalid(&e))?;
+        bt3_install::icon::images(&rgba, side)
+    };
     let ico = Path::new(&args[1]);
     if let Some(dir) = ico.parent() {
         fs::create_dir_all(dir)?;

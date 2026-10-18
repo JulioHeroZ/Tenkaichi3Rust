@@ -103,6 +103,24 @@ pub fn ico(images: &[(usize, Vec<u8>)]) -> Vec<u8> {
     out
 }
 
+/// The images of an .ico written by `ico` (or any .ico of 32-bit images): (side, image data).
+pub fn read_ico(d: &[u8]) -> Result<Vec<(usize, Vec<u8>)>, String> {
+    let u16_at = |o: usize| d.get(o..o + 2).map(|b| u16::from_le_bytes([b[0], b[1]]) as usize);
+    let u32_at = |o: usize| d.get(o..o + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize);
+    if u16_at(2) != Some(1) {
+        return Err("não é um arquivo .ico".into());
+    }
+    let n = u16_at(4).ok_or("ícone vazio")?;
+    let mut out = Vec::new();
+    for i in 0..n {
+        let e = 6 + 16 * i;
+        let side = match d.get(e) { Some(0) => 256, Some(&s) => s as usize, None => return Err("ícone cortado".into()) };
+        let (len, at) = (u32_at(e + 8).ok_or("ícone cortado")?, u32_at(e + 12).ok_or("ícone cortado")?);
+        out.push((side, d.get(at..at + len).ok_or("ícone cortado")?.to_vec()));
+    }
+    Ok(out)
+}
+
 /// The icon group resource (GRPICONDIR) of images stored as RT_ICON 1..n.
 pub fn group(images: &[(usize, Vec<u8>)]) -> Vec<u8> {
     let mut out = Vec::new();

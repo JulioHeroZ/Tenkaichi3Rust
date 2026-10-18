@@ -24,7 +24,7 @@ Um workspace Cargo com duas crates (`game`, `tools/install`), mais ferramentas e
 
 | Pasta | Conteúdo |
 |---|---|
-| `install/` | `src/bin/instalador.rs` (a janela do instalador), `src/bin/desinstalar.rs` (Desinstalar.exe), `src/lib.rs` (o instalador de um arquivo só), `instalar.py` (modos jogador e desenvolvedor, os passos), `extract_iso.py` (ISO sem 7-Zip), crate `bt3-install` (cópia dos arquivos e ADX → WAV), `pack.py` (pacotes `.bt3pak` do jogador), `empacotar.py` (gera `dist/Instalar Tenkaichi 3.exe`) |
+| `install/` | `src/bin/instalador.rs` (a janela do instalador), `src/bin/desinstalar.rs` (Desinstalar.exe), `src/lib.rs` (o instalador de um arquivo só), `instalar.py` (modos jogador e desenvolvedor, os passos), `extract_iso.py` (ISO sem 7-Zip), crate `bt3-install` (cópia dos arquivos e ADX → WAV), `pack.py` (pacotes `.bt3pak` do jogador), `empacotar.py` (gera `dist/Instalar Tenkaichi 3.exe`), `testar_build.py`/`.cmd` (testa a build antes), `gerar_instalador.cmd` (testa e gera em segundo plano) |
 | `assets/` | `files_extract.py`, `organize.py` (pastas por tipo e nome), `asset_dirs.py` e os conversores de cada formato (texturas, modelos, cenários, animações, efeitos, sons, textos, tabelas tipadas em `layout.py`), recursos de PC (`convert_*.py`) e vídeos (`prepare_pc_media.py`) |
 | `translate/` | o tradutor C → Rust (`c2rs/`) e seus scripts |
 | `difftest/` | o mesmo C compilado para i386 com o float do PS2, para comparar função por função |

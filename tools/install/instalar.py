@@ -15,6 +15,11 @@ The steps:
  6. the movies' MPEG-2 video, unchanged (pss_video.py; the game decodes it in Rust).
 Each step is skipped when its result is already there, so it can be stopped and run again.
 
+Updating: the installation leaves assets/instalacao.txt with the version of the data (a hash of the tools that make
+them, data_version) and the kind of installation. Installing again in that folder with the same data version and kind
+only replaces the programs (Tenkaichi3.exe, its libraries, Desinstalar.exe) and keeps the data: no disc image needed,
+a few seconds. When the tools changed, or the kind did, or with --do-zero, it installs from the start.
+
 Optionally the HD texture packs (tools/install/texturas.py): --texturas-2x / --texturas-4x baixar (download) or a
 .rar or folder the user has.
 
@@ -23,7 +28,7 @@ Optionally the HD texture packs (tools/install/texturas.py): --texturas-2x / --t
 
 The installer's window (Instalar Tenkaichi 3.exe, tools/install/src/bin/instalador.rs) runs this.
 """
-import argparse, os, subprocess, sys, shutil, time
+import argparse, hashlib, os, subprocess, sys, shutil, time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -31,6 +36,42 @@ PY = sys.executable
 TOOLS = ROOT / "tools"
 BIN = ROOT / "bin"  # the player package's ready programs (tools/install/empacotar.py)
 EXE = ".exe" if os.name == "nt" else ""
+VERSION = "0.2.2"  # the installer's, shown in Settings > Apps
+STAMP = "instalacao.txt"  # in assets/: what is installed there
+
+
+def data_version(root=ROOT):
+    """the version of the installed data: a hash of everything that makes them (the conversion tools, the tables'
+    layout, the raw copy and the audio's conversion). The packaged installer carries it in dados.versao (its tools
+    are there, bt3-install's sources are not); from the project it is worked out."""
+    ready = root / "dados.versao"
+    if ready.exists():
+        return ready.read_text().strip()
+    files = sorted(f for f in (root / "tools" / "assets").glob("*.py") if not f.name.startswith("make_"))
+    files += [root / "tools" / "install" / n for n in ("extract_iso.py", "pack.py", "src/main.rs")]
+    files += [root / "tools" / "translate" / "c2rs" / "tables_from_elf.py", root / "game" / "src" / "gen" / "data.rs"]
+    h = hashlib.sha256()
+    for f in files:
+        h.update(f.relative_to(root).as_posix().encode() + b"\0")
+        h.update(f.read_bytes().replace(b"\r\n", b"\n") + b"\0")
+    return h.hexdigest()[:16]
+
+
+def read_stamp(dest):
+    """assets/instalacao.txt of a game folder, as a dict (empty when there is none)"""
+    try:
+        lines = (Path(dest) / "assets" / STAMP).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+    return dict(l.split("=", 1) for l in lines if "=" in l)
+
+
+def up_to_date(dest, mode):
+    """the data in `dest` are the ones this installer makes, for this kind of installation"""
+    st = read_stamp(dest)
+    assets = Path(dest) / "assets"
+    have = any(assets.glob("*.bt3pak")) if mode == "jogador" else (assets / "files").is_dir()
+    return have and st.get("dados") == data_version() and st.get("modo") == mode
 
 
 def run(what, args, env=None):
@@ -111,7 +152,7 @@ def register(dest, mode):
     size = sum(f.stat().st_size for f in dest.rglob("*") if f.is_file()) // 1024
     values = [("DisplayName", "REG_SZ", "Dragon Ball Z Budokai Tenkaichi 3 (PC%s)" % (", desenvolvedor" if mode == "desenvolvedor" else "")),
               ("DisplayIcon", "REG_SZ", str(dest / "Tenkaichi3.exe") + ",0"),
-              ("DisplayVersion", "REG_SZ", "0.1.0"),
+              ("DisplayVersion", "REG_SZ", VERSION),
               ("Publisher", "REG_SZ", "Tenkaichi3Rust"),
               ("InstallLocation", "REG_SZ", str(dest)),
               ("UninstallString", "REG_SZ", '"%s"' % (dest / "Desinstalar.exe")),
@@ -127,13 +168,19 @@ def register(dest, mode):
             return
 
 
-def install(iso, mode, dest, textures=()):
+def install(iso, mode, dest, textures=(), fresh=False):
     """the game in `dest`: Tenkaichi3.exe and its libraries, and assets/ with the game's data, in packs (player) or as
-    editable open files (developer); work files under dest/_instalacao, deleted at the end"""
+    editable open files (developer); work files under dest/_instalacao, deleted at the end. When `dest` already has
+    this installer's data (up_to_date), only the programs are replaced."""
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
     work = dest / "_instalacao"
-    extract(iso, work / "assets", work / "disc")
+    update = not fresh and up_to_date(dest, mode)
+    if update:
+        print("\n== atualizando: os dados do jogo em %s já estão em dia; só os programas são trocados" % dest, flush=True)
+    else:
+        (dest / "assets" / STAMP).unlink(missing_ok=True)  # until the data are made again
+        extract(iso, work / "assets", work / "disc")
     print("\n== instalando o jogo em %s" % dest, flush=True)
     exe = program("Tenkaichi3", "bt3-original", "tenkaichi3")
     shutil.copy2(exe, dest / ("Tenkaichi3" + EXE))
@@ -143,13 +190,17 @@ def install(iso, mode, dest, textures=()):
                 shutil.copyfile(src, dest / lib)
                 break
     assets = dest / "assets"
-    for old in list(assets.glob("*.bt3pak")) if assets.exists() else []:
-        old.unlink()  # a player install before
-    if mode == "jogador":
+    if update:
+        pass
+    elif mode == "jogador":
+        for old in list(assets.glob("*.bt3pak")) if assets.exists() else []:
+            old.unlink()  # a player install before
         for top in ("files", "audio", "video", "data"):
             shutil.rmtree(assets / top, ignore_errors=True)  # a developer install before
         run("empacotando os dados do jogo", [PY, str(TOOLS / "install" / "pack.py"), str(work / "assets"), str(assets)])
     else:
+        for old in list(assets.glob("*.bt3pak")) if assets.exists() else []:
+            old.unlink()  # a player install before
         # the open files as they are: what the game reads, editable (the copy of the disc, _legacy, is left out)
         assets.mkdir(exist_ok=True)
         for top in ("files", "audio", "video", "data"):
@@ -171,13 +222,22 @@ def install(iso, mode, dest, textures=()):
     opening = work / "assets" / "video" / "zs3usop.m2v"
     if not opening.exists():
         opening = assets / "video" / "zs3usop.m2v"
+    icon = dest / "Tenkaichi3.ico"
+    if not opening.exists() and icon.exists():
+        opening = icon  # an update of a player install: the icon made before
     if opening.exists():
         run("ícone do jogo", [str(program("bt3-install", "bt3-install", "bt3-install")), "icone", str(opening),
-                              str(dest / "Tenkaichi3.ico"), str(dest / ("Tenkaichi3" + EXE)), str(dest / ("Desinstalar" + EXE))])
+                              str(icon), str(dest / ("Tenkaichi3" + EXE)), str(dest / ("Desinstalar" + EXE))])
     for which, source in textures:
         if source:
             run("texturas HD %s" % which, [PY, "-u", str(TOOLS / "install" / "texturas.py"), which, source, str(dest)])
     shutil.rmtree(work, ignore_errors=True)
+    if not update:
+        (assets / STAMP).write_text("dados=%s\nmodo=%s\nversao=%s\n" % (data_version(), mode, VERSION), encoding="utf-8")
+    else:
+        st = read_stamp(dest)
+        st["versao"] = VERSION
+        (assets / STAMP).write_text("".join("%s=%s\n" % kv for kv in st.items()), encoding="utf-8")
     shortcuts(dest / ("Tenkaichi3" + EXE), dest)
     register(dest, mode)
     print("\nPronto. O jogo está em %s (atalho \"Tenkaichi 3\" na área de trabalho e no menu Iniciar; para remover,"
@@ -197,8 +257,15 @@ def main():
     p.add_argument("--destino", default=None, help="pasta do jogo (padrão: Program Files (x86)\\Tenkaichi 3)")
     p.add_argument("--texturas-2x", default=None, help="texturas HD 1080p: baixar, ou um .rar ou uma pasta que você já tem")
     p.add_argument("--texturas-4x", default=None, help="texturas HD 4K: baixar, ou um .rar ou uma pasta que você já tem")
+    p.add_argument("--do-zero", action="store_true", help="refaz os dados do jogo mesmo que já estejam em dia")
+    p.add_argument("--verificar", action="store_true",
+                   help="só diz se a pasta pode ser atualizada sem a imagem do disco (atualizar / instalar)")
     a = p.parse_args()
-    install(a.iso, a.modo, a.destino or default_dest(), [("2x", a.texturas_2x), ("4x", a.texturas_4x)])
+    dest = a.destino or default_dest()
+    if a.verificar:
+        print("atualizar" if up_to_date(dest, a.modo) else "instalar")
+        return
+    install(a.iso, a.modo, dest, [("2x", a.texturas_2x), ("4x", a.texturas_4x)], a.do_zero)
 
 
 if __name__ == "__main__":

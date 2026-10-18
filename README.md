@@ -70,6 +70,16 @@ No Windows, com [Rust](https://rustup.rs) e [Python 3](https://www.python.org): 
 gera `dist/Instalar Tenkaichi 3.exe` (o programa da janela, com o Python embutido, as ferramentas de extração e o
 jogo compilado dentro).
 
+* `tools\install\testar_build.cmd` testa a build antes: compila o jogo, joga a tela inicial e uma luta numa janela
+  escondida e confere se a imagem da janela está certa (precisa de uma instalação de desenvolvedor em `assets\files`
+  do projeto; as imagens ficam em `dist\teste`).
+* `tools\install\gerar_instalador.cmd` faz as duas coisas em segundo plano (janela minimizada): testa e, se passar,
+  gera o instalador. O andamento fica em `dist\gerar.log`.
+
+Atualizar: o instalador deixa `assets\instalacao.txt` com a versão dos dados (um hash das ferramentas que os
+fazem). Instalando de novo na mesma pasta, com os mesmos dados e o mesmo tipo, ele só troca os programas, em
+segundos e sem a imagem do disco. Se as ferramentas mudaram, refaz tudo; a caixa "Refazer tudo do zero" força isso.
+
 ## Modificar
 
 Na instalação de desenvolvedor, os arquivos do jogo ficam em `assets\files` da pasta do jogo, agrupados por tipo e
