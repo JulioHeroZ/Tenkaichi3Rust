@@ -459,6 +459,8 @@ impl Gpu {
             let name = std::ffi::CStr::from_ptr((gl.GetString)(gl::RENDERER) as *const i8).to_string_lossy().into_owned();
             let ver = std::ffi::CStr::from_ptr((gl.GetString)(gl::VERSION) as *const i8).to_string_lossy().into_owned();
             eprintln!("bt3: GL renderer: {name} ({ver})");
+            // (a uniform is set on the program in use: program() leaves the last one made in use)
+            (gl.UseProgram)(self.prog_present);
             (gl.Uniform2f)((gl.GetUniformLocation)(self.prog_present, b"uvScale\0".as_ptr()), 512.0 / GS_W as f32, 448.0 / GS_H as f32);
             (gl.UseProgram)(self.prog_backdrop);
             (gl.Uniform2f)((gl.GetUniformLocation)(self.prog_backdrop, b"uvScale\0".as_ptr()), 512.0 / GS_W as f32, 448.0 / GS_H as f32);
@@ -1573,51 +1575,95 @@ impl Gpu {
         (gl.BindFramebuffer)(gl::FRAMEBUFFER, 0);
         if self.surface.has_window() {
             let (sw, sh) = self.surface.size();
-            (gl.Viewport)(0, 0, sw, sh);
-            (gl.Disable)(gl::SCISSOR_TEST);
-            (gl.ClearColor)(0.0, 0.0, 0.0, 1.0);
-            (gl.Clear)(gl::COLOR_BUFFER_BIT);
-            if let Some(b) = best.filter(|&b| self.targets[b].cleared) {
-                // the picture's shape: the chosen one (16:9 by default) in fights and the attract demo; the
-                // menus' pages are composed for 4:3, so they are shown at 4:3 in the middle, over a blurred,
-                // darkened copy of themselves that fills the sides
-                let wide = crate::host::settings::wide();
-                let want = if Self::wide_picture() { crate::host::settings::aspect_milli() as f32 / 1000.0 } else { 4.0 / 3.0 };
-                let fit = |want: f32| {
-                    if sw as f32 > sh as f32 * want {
-                        ((sh as f32 * want + 0.5) as i32, sh)
-                    } else {
-                        (sw, (sw as f32 / want + 0.5) as i32)
-                    }
-                };
-                if wide && !Self::wide_picture() {
-                    let (w, h) = fit(crate::host::settings::aspect_milli() as f32 / 1000.0);
-                    (gl.Viewport)((sw - w) / 2, (sh - h) / 2, w, h);
-                    (gl.Disable)(gl::DEPTH_TEST);
-                    (gl.Disablei)(gl::BLEND, 0);
-                    (gl.ColorMask)(1, 1, 1, 1);
-                    (gl.UseProgram)(self.prog_backdrop);
-                    (gl.BindVertexArray)(self.vao);
-                    self.bind_tex(0, self.targets[b].col, 7);
-                    (gl.DrawArrays)(gl::TRIANGLES, 0, 3);
+            self.draw_window(best, sw, sh);
+            self.surface.swap(); // (pacing: at the vertical blank, host::vblank_wait)
+        }
+    }
+
+    /// The picture as the window shows it, into the framebuffer bound (`sw` x `sh` pixels).
+    unsafe fn draw_window(&mut self, best: Option<usize>, sw: i32, sh: i32) {
+        let gl = &self.gl;
+        (gl.Viewport)(0, 0, sw, sh);
+        (gl.Disable)(gl::SCISSOR_TEST);
+        (gl.ClearColor)(0.0, 0.0, 0.0, 1.0);
+        (gl.Clear)(gl::COLOR_BUFFER_BIT);
+        if let Some(b) = best.filter(|&b| self.targets[b].cleared) {
+            // the picture's shape: the chosen one (16:9 by default) in fights and the attract demo; the
+            // menus' pages are composed for 4:3, so they are shown at 4:3 in the middle, over a blurred,
+            // darkened copy of themselves that fills the sides
+            let wide = crate::host::settings::wide();
+            let want = if Self::wide_picture() { crate::host::settings::aspect_milli() as f32 / 1000.0 } else { 4.0 / 3.0 };
+            let fit = |want: f32| {
+                if sw as f32 > sh as f32 * want {
+                    ((sh as f32 * want + 0.5) as i32, sh)
+                } else {
+                    (sw, (sw as f32 / want + 0.5) as i32)
                 }
-                let (w, h) = fit(want);
+            };
+            if wide && !Self::wide_picture() {
+                let (w, h) = fit(crate::host::settings::aspect_milli() as f32 / 1000.0);
                 (gl.Viewport)((sw - w) / 2, (sh - h) / 2, w, h);
                 (gl.Disable)(gl::DEPTH_TEST);
                 (gl.Disablei)(gl::BLEND, 0);
                 (gl.ColorMask)(1, 1, 1, 1);
-                (gl.UseProgram)(self.prog_present);
+                (gl.UseProgram)(self.prog_backdrop);
                 (gl.BindVertexArray)(self.vao);
                 self.bind_tex(0, self.targets[b].col, 7);
                 (gl.DrawArrays)(gl::TRIANGLES, 0, 3);
-                (gl.BindVertexArray)(0);
-                // the port's screens are drawn for 4:3: in the middle, at the picture's height
-                let (w, h) = fit(4.0 / 3.0);
-                (gl.Viewport)((sw - w) / 2, (sh - h) / 2, w, h);
-                self.draw_overlay();
             }
-            self.surface.swap(); // (pacing: at the vertical blank, host::vblank_wait)
+            let (w, h) = fit(want);
+            (gl.Viewport)((sw - w) / 2, (sh - h) / 2, w, h);
+            (gl.Disable)(gl::DEPTH_TEST);
+            (gl.Disablei)(gl::BLEND, 0);
+            (gl.ColorMask)(1, 1, 1, 1);
+            (gl.UseProgram)(self.prog_present);
+            (gl.BindVertexArray)(self.vao);
+            self.bind_tex(0, self.targets[b].col, 7);
+            (gl.DrawArrays)(gl::TRIANGLES, 0, 3);
+            (gl.BindVertexArray)(0);
+            // the port's screens are drawn for 4:3: in the middle, at the picture's height
+            let (w, h) = fit(4.0 / 3.0);
+            (gl.Viewport)((sw - w) / 2, (sh - h) / 2, w, h);
+            self.draw_overlay();
         }
+    }
+
+    /// BT3_SHOT_WINDOW=WxH (with BT3_SHOT): the picture as a window of that size shows it, to
+    /// shots/window_NNNNN.png (tests without a window: present's own drawing, letterbox, menus' backdrop, overlay).
+    unsafe fn window_shot(&mut self, best: Option<usize>) {
+        let Some((w, h)) = std::env::var("BT3_SHOT_WINDOW").ok().and_then(|v| {
+            let (a, b) = v.split_once('x')?;
+            Some((a.parse::<i32>().ok()?, b.parse::<i32>().ok()?))
+        }) else {
+            return;
+        };
+        let gl = &self.gl;
+        let (mut tex, mut fbo) = (0, 0);
+        (gl.GenTextures)(1, &mut tex);
+        (gl.BindTexture)(gl::TEXTURE_2D, tex);
+        (gl.TexImage2D)(gl::TEXTURE_2D, 0, gl::RGBA8 as i32, w, h, 0, gl::RGBA, gl::UNSIGNED_BYTE, std::ptr::null());
+        (gl.GenFramebuffers)(1, &mut fbo);
+        (gl.BindFramebuffer)(gl::FRAMEBUFFER, fbo);
+        (gl.FramebufferTexture2D)(gl::FRAMEBUFFER, gl::COLOR_ATTACHMENT0, gl::TEXTURE_2D, tex, 0);
+        let bufs = [gl::COLOR_ATTACHMENT0];
+        (gl.DrawBuffers)(1, bufs.as_ptr());
+        self.draw_window(best, w, h);
+        let gl = &self.gl;
+        let mut px = vec![0u8; (w * h * 4) as usize];
+        (gl.BindFramebuffer)(gl::READ_FRAMEBUFFER, fbo);
+        (gl.ReadBuffer)(gl::COLOR_ATTACHMENT0);
+        (gl.ReadPixels)(0, 0, w, h, gl::RGBA, gl::UNSIGNED_BYTE, px.as_mut_ptr() as *mut c_void);
+        (gl.BindFramebuffer)(gl::FRAMEBUFFER, 0);
+        (gl.DeleteFramebuffers)(1, &fbo);
+        (gl.DeleteTextures)(1, &tex);
+        // the window's rows are bottom-up
+        let row = (w * 4) as usize;
+        let mut out = vec![0u8; px.len()];
+        for y in 0..h as usize {
+            out[y * row..(y + 1) * row].copy_from_slice(&px[(h as usize - 1 - y) * row..(h as usize - y) * row]);
+        }
+        let _ = std::fs::create_dir_all("shots");
+        let _ = super::write_png(&format!("shots/window_{:05}.png", self.frame), w as u32, h as u32, &out);
     }
 
     /// Esc: "quit the game?" over the last picture, the game paused until it is answered.
@@ -1920,6 +1966,9 @@ impl Gpu {
         let best = self.shown_target(gs.main_fbp);
         unsafe {
             self.present(best);
+            if self.shot_every > 0 && self.frame % self.shot_every == 0 {
+                self.window_shot(best);
+            }
             let gl = &self.gl;
             if self.verbose && self.frame % 30 == 0 {
                 eprintln!(
