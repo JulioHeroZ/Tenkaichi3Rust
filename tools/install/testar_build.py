@@ -13,7 +13,7 @@ assets/files), and its own saves and settings (yours are not touched).
 
 Exit code 0 when everything passed.
 """
-import os, struct, subprocess, sys, tempfile, time, zlib
+import os, shutil, struct, subprocess, sys, tempfile, time, zlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -118,6 +118,14 @@ def main():
     exe = ROOT / "target" / "pacote" / "release" / ("tenkaichi3" + EXE)
     if "--sem-compilar" not in sys.argv or not exe.exists():
         exe = build()
+    # the program with its libraries beside it, as installed (the window needs SDL3.dll)
+    prog = OUT / "programa"
+    prog.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(exe, prog / exe.name)
+    for lib in ("SDL3.dll", "libiconv-2.dll"):
+        if (ROOT / "vendor" / "windows" / lib).exists():
+            shutil.copyfile(ROOT / "vendor" / "windows" / lib, prog / lib)
+    exe = prog / exe.name
     fails = []
     starts = ",".join("%d:start" % f for f in range(300, 2401, 60))
     for name, frames, shot, extra, first, edges in [
@@ -125,11 +133,14 @@ def main():
         ("luta", 1500, 300, {"BT3_DEMO": "1"}, 300, True),
     ]:
         code, shots = play(exe, name, frames, shot, extra)
+        out = (OUT / name / "saida.txt").read_text("utf-8", "replace")
+        if "drawing in software" in out:
+            fails.append("%s: a placa de vídeo não foi usada (%s)" % (name, out.split("unavailable", 1)[-1].split("\n")[0].strip(" ();")))
         if code != 0:
             fails.append("%s: o jogo terminou com erro (%s); veja dist\\teste\\%s\\saida.txt" % (name, code, name))
         shots = [s for s in shots if int(s.stem.split("_")[1]) >= first]
         if not shots:
-            fails.append("%s: nenhuma imagem da janela foi salva" % name)
+            fails.append("%s: nenhuma imagem da janela foi salva (o jogo não abriu a placa de vídeo?)" % name)
         for s in shots:
             img = png(s)
             centre = spread(img, 0.3, 0.7, 0.2, 0.8)
