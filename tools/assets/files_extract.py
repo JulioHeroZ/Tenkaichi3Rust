@@ -418,7 +418,7 @@ def main():
     raw, assets = sys.argv[1], sys.argv[2]
     parts = sys.argv[3:] or ["pzs3us1"]
     t0 = time.time()
-    nfiles = ntex = 0
+    nfiles = ntex = seen = 0
     os.makedirs(os.path.join(assets, "files"), exist_ok=True)
     deadline = time.time() + float(os.environ.get("SECONDS_MAX", "1e9"))
     # resumable: the files already looked at are listed in assets/files/extraidos-<part>.txt
@@ -439,7 +439,7 @@ def main():
     print("%d files to convert, %d processes" % (total, jobs), flush=True)
 
     def run_round(items, banks):
-        nonlocal nfiles, ntex
+        nonlocal nfiles, ntex, seen
         deferred = []
         args = [(raw, assets, part, f, banks) for part, f in items]
         if jobs > 1 and len(args) > 1:
@@ -457,10 +457,13 @@ def main():
                     continue
                 nfiles += wrote
                 ntex += nt
+                seen += 1
                 done_files[part].write(f + "\n")
                 done_files[part].flush()
-                if wrote and nfiles % 100 == 0:
-                    print("%d files, %d textures (%.0fs) of %d" % (nfiles, ntex, time.time() - t0, total), flush=True)
+                # progress over every file looked at (many loose files of the disc make nothing; the window's
+                # bar goes by "<looked at> files ... of <total>")
+                if seen % 200 == 0 or seen == total:
+                    print("%d files, %d textures (%.0fs) of %d; %d converted" % (seen, ntex, time.time() - t0, total, nfiles), flush=True)
                 if time.time() > deadline:
                     print("stopped for now (time limit); run again to continue")
                     raise SystemExit(0)

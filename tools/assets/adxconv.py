@@ -49,6 +49,10 @@ def wav_read(b):
         p += 8 + n + (n & 1)
     raise ValueError("WAV without data")
 
+# the signed value of each nibble
+SN = [n - 16 if n >= 8 else n for n in range(16)]
+
+
 def convert(d, skel):
     """-> (wav bytes, adx.txt text) or None; the steps are zeroed in skel"""
     h = header(d)
@@ -60,32 +64,86 @@ def convert(d, skel):
     out = [[] for _ in range(ch)]
     kept = []
     scales = []
+    sn = SN
     for fr in range(nf):
         for c in range(ch):
             o = start + (fr * ch + c) * 18
-            scale = be16(d, o)
+            scale = (d[o] << 8) | d[o + 1]
             h1, h2 = hist[c]
-            ambiguous = False
-            for i in range(32):
-                n = (d[o + 2 + i // 2] >> (0 if i & 1 else 4)) & 15
-                if n >= 8:
-                    n -= 16
-                pred = (c1 * h1 + c2 * h2) >> 12
-                v = max(-32768, min(32767, n * scale + pred))
-                if scale == 0 or v in (-32768, 32767):
-                    ambiguous = True
-                out[c].append(v)
-                h2, h1 = h1, v
+            ambiguous = scale == 0
+            app = out[c].append
+            for b in d[o + 2:o + 18]:
+                # the high step first
+                for n in (sn[b >> 4], sn[b & 15]):
+                    v = n * scale + ((c1 * h1 + c2 * h2) >> 12)
+                    if v >= 32767:
+                        v = 32767
+                        ambiguous = True
+                    elif v <= -32768:
+                        v = -32768
+                        ambiguous = True
+                    app(v)
+                    h2 = h1
+                    h1 = v
             hist[c] = [h1, h2]
             if ambiguous:
                 kept.append("%d:%s" % (fr * ch + c, d[o + 2:o + 18].hex()))
-            skel[o:o + 18] = bytes(18)
             scales.append(scale)
-    pcm = [out[c][i] for i in range(nf * 32) for c in range(ch)]
+    skel[start:start + nf * ch * 18] = bytes(nf * ch * 18)
+    if ch == 1:
+        pcm = out[0]
+    else:
+        pcm = [0] * (nf * 32 * ch)
+        for c in range(ch):
+            pcm[c::ch] = out[c]
     txt = ("# ADX stream (tools/assets/adxconv.py): coefficients, frames, frames whose steps are kept (index:hex)\n"
            "coefs %d %d\nframes %d\n" % (c1, c2, nf) + "".join("keep %s\n" % k for k in kept)
            + "".join("scales %s\n" % " ".join(map(str, scales[i:i + 32])) for i in range(0, len(scales), 32)))
     return wav(h["rate"], ch, pcm), txt
+
+
+def steps_all(buf, start, nf, ch, c1, c2, pcm, kept):
+    """the steps of every frame at once (numpy), when the steps apply chooses give back every sample of the WAV
+    exactly (the stream as converted): then each sample's predictor comes from the WAV itself. False when some
+    sample comes out different (an edited WAV): apply goes frame by frame then."""
+    import numpy as np
+    region = np.frombuffer(buf, np.uint8, nf * ch * 18, start).reshape(nf, ch, 18)
+    scale = (region[:, :, 0].astype(np.int64) << 8) | region[:, :, 1]
+    nib = np.zeros((nf, ch, 32), np.int64)
+    t_all = np.asarray(pcm, np.int64).reshape(nf, 32, ch)
+    for c in range(ch):
+        t = t_all[:, :, c].ravel()
+        s1 = np.concatenate(([0], t[:-1]))
+        s2 = np.concatenate(([0, 0], t[:-2]))[:len(t)]
+        pred = (c1 * s1 + c2 * s2) >> 12
+        sc = np.repeat(scale[:, c], 32)
+        safe = np.where(sc == 0, 1, sc)
+        g = (t - pred) // safe
+        best = np.zeros(len(t), np.int64)
+        besterr = np.full(len(t), 1 << 40, np.int64)
+        for dx in (-1, 0, 1, 2):
+            x = g + dx
+            err = np.abs(np.clip(x * sc + pred, -32768, 32767) - t)
+            better = (x >= -8) & (x < 8) & (err < besterr)
+            best = np.where(better, x, best)
+            besterr = np.where(better, err, besterr)
+        n = np.where(sc == 0, 0, best).reshape(nf, 32)
+        for k, raw in kept.items():
+            if k % ch == c:
+                q = np.frombuffer(raw, np.uint8)
+                n[k // ch] = np.array([SN[v] for pair in zip(q >> 4, q & 15) for v in pair])
+        v = np.clip(n.ravel() * sc + pred, -32768, 32767)
+        if not (v == t).all():
+            return False
+        nib[:, c, :] = n
+    nib &= 15
+    steps = (nib[:, :, 0::2] << 4) | nib[:, :, 1::2]
+    view = memoryview(buf)[start:start + nf * ch * 18]
+    arr = np.frombuffer(view, np.uint8).reshape(nf, ch, 18).copy()
+    arr[:, :, 2:] = steps
+    buf[start:start + nf * ch * 18] = arr.tobytes()
+    return True
+
 
 def apply(buf, wavb, txt):
     h = header(buf)
@@ -114,6 +172,8 @@ def apply(buf, wavb, txt):
             raise ValueError("adx.txt has %d scales for %d frames" % (len(scales), nf * ch))
         for k, v in enumerate(scales):
             struct.pack_into(">H", buf, start + k * 18, v)
+    if steps_all(buf, start, nf, ch, c1, c2, pcm, kept):
+        return
     hist = [[0, 0] for _ in range(ch)]
     for fr in range(nf):
         for c in range(ch):

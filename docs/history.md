@@ -4,6 +4,21 @@ O registro do trabalho, do mais recente ao mais antigo. A organização atual es
 [project-layout.md](project-layout.md).
 
 
+
+## Conversão mais rápida (Claude, 18/10/2026)
+
+- Medido onde o tempo da instalação vai: a maior parte é o `pzs3us2` (65.201 vozes e músicas em ADX, 1,1 GB) e os
+  sons dos bancos (ADPCM do PS2), decodificados e conferidos amostra por amostra em Python.
+- `adxconv.py` e `vagconv.py`: a decodificação num laço só, e a reconstrução (a conferência de que o arquivo volta
+  igual) com numpy sobre o som inteiro, com a volta ao laço antigo quando um WAV foi editado. `texconv.py`: busca
+  de endereços por tabela no lugar de ordenar. `bpe.py`: expansão por tabela.
+- Saída idêntica byte a byte: 361 arquivos com bancos de som, 699 arquivos BPE, um décimo do `pzs3us1` e 600
+  vozes reais do `pzs3us2` (no computador do usuário), com WAVs editados também iguais. Tempo: ADX 6,7x, sons dos
+  bancos ~5x, amostra do `pzs3us1` 2,8x.
+- A barra de progresso conta todos os arquivos vistos (antes, só os convertidos, contra o total de todos: andava
+  devagar demais). `DATA_VERSION` passou a ser fixa (em `instalar.py`), para uma mudança só de velocidade não
+  forçar a reinstalação.
+
 ## Atualizar sem refazer, e teste da build (Claude, 18/10/2026)
 
 - A 0.2.0 saía com a imagem da janela quebrada (o centro de uma cor só): o `uvScale` do shader de apresentação era

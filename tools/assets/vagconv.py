@@ -47,6 +47,56 @@ def steps_for(head, pcm, s1, s2):
         s2, s1 = s1, t
     return bytes(nib[2 * i] | nib[2 * i + 1] << 4 for i in range(14))
 
+# ((n << 12) >> shift) for the 16 nibbles (index n & 15), by the shift the SPU uses (above 12: 9)
+STEP = [[(((n - 16 if n >= 8 else n) << 12) >> sh) for n in range(16)] for sh in range(13)]
+
+
+def decode_checked(d, p, nb):
+    """the nb blocks at d[p:]: (pcm, the two header bytes of each block as hex, the blocks whose steps cannot be
+    found again from the pcm as "block:hex"); the same as decode_block and steps_for block by block, in one pass
+    (the steps are unique wherever the output was not clamped, so only clamped samples are looked at)"""
+    pcm, heads, clamped = [], [], []
+    append = pcm.append
+    s1 = s2 = 0
+    for j in range(nb):
+        o = p + 16 * j
+        h = d[o]
+        heads.append(d[o:o + 2].hex())
+        filt = h >> 4
+        f0, f1 = FILT[filt] if filt < 5 else (0, 0)
+        shift = h & 15
+        step = STEP[shift if shift <= 12 else 9]
+        for b in d[o + 2:o + 16]:
+            for n in (b & 15, b >> 4):
+                s = step[n] + ((s1 * f0 + s2 * f1 + 32) >> 6)
+                if s >= 32767:
+                    s = 32767
+                    clamped.append(len(pcm))
+                elif s <= -32768:
+                    s = -32768
+                    clamped.append(len(pcm))
+                append(s)
+                s2 = s1
+                s1 = s
+    raws = []
+    for i in clamped:
+        j = i // 28
+        if raws and raws[-1][0] == j:
+            continue
+        h = d[p + 16 * j]
+        filt = h >> 4
+        f0, f1 = FILT[filt] if filt < 5 else (0, 0)
+        shift = h & 15
+        step = STEP[shift if shift <= 12 else 9]
+        s1 = pcm[i - 1] if i >= 1 else 0
+        s2 = pcm[i - 2] if i >= 2 else 0
+        pred = (s1 * f0 + s2 * f1 + 32) >> 6
+        t = pcm[i]
+        if sum(1 for v in step if max(-32768, min(32767, v + pred)) == t) != 1:
+            raws.append((j, d[p + 16 * j + 2:p + 16 * j + 16].hex()))
+    return pcm, heads, ["%d:%s" % r for r in raws]
+
+
 def encode_steps(head, pcm, s1, s2):
     """the nearest steps for pcm (an edited sound): -> (bytes, s1, s2)"""
     shift, filt = head & 15, head >> 4
@@ -135,16 +185,7 @@ def convert(d, skel):
             nb = (stop - p) // 16
             if any(l.split()[2] == str(p) for l in lines):
                 continue  # a sample listed twice
-            s1 = s2 = 0
-            pcm, heads, raws = [], [], []
-            for j in range(nb):
-                blk = d[p + 16 * j:p + 16 * j + 16]
-                out, n1, n2 = decode_block(blk, s1, s2)
-                if steps_for(blk[0], out, s1, s2) != blk[2:]:
-                    raws.append("%d:%s" % (j, blk[2:].hex()))
-                s1, s2 = n1, n2
-                pcm += out
-                heads.append(blk[:2].hex())
+            pcm, heads, raws = decode_checked(d, p, nb)
             name = "sound_%d_%03d.wav" % (hi, k)
             wavs[name] = wav(rate, pcm)
             lines.append("%s %d %d %d %s %s" % (name, hi, p, nb, "".join(heads), ",".join(raws) or "-"))
@@ -166,20 +207,8 @@ def convert(d, skel):
                 while o + 16 <= bd_end and free(o):
                     o += 16
                 nb = (o - p) // 16
-                s1 = s2 = 0
-                pcm, heads, raws = [], [], []
-                ok = True
-                for j in range(nb):
-                    blk = d[p + 16 * j:p + 16 * j + 16]
-                    if blk[0] >> 4 > 4:
-                        ok = False
-                        break
-                    out, n1, n2 = decode_block(blk, s1, s2)
-                    if steps_for(blk[0], out, s1, s2) != blk[2:]:
-                        raws.append("%d:%s" % (j, blk[2:].hex()))
-                    s1, s2 = n1, n2
-                    pcm += out
-                    heads.append(blk[:2].hex())
+                ok = all(d[p + 16 * j] >> 4 <= 4 for j in range(nb))
+                pcm, heads, raws = decode_checked(d, p, nb) if ok else ([], [], [])
                 if ok and nb:
                     name = "sound_%d_tail%d.wav" % (hi, t)
                     t += 1
@@ -195,6 +224,55 @@ def convert(d, skel):
            + "\n".join(lines) + "\n")
     return wavs, txt
 
+def steps_all(heads, pcm, raw):
+    """the blocks (header + steps) of a whole sound at once, when every block's steps give back its pcm exactly
+    (the sound as converted): numpy over all samples, since then each sample's predictor comes from the pcm itself.
+    None when some block needs the nearest steps instead (an edited sound): apply goes block by block then."""
+    import numpy as np
+    nb = len(heads) // 2
+    t = np.asarray(pcm, np.int64)
+    hb = np.frombuffer(heads, np.uint8)[0::2].astype(np.int64)
+    filt = np.repeat(hb >> 4, 28)
+    shift = np.repeat(hb & 15, 28)
+    sh = np.where(shift <= 12, shift, 9)
+    ft = np.array(FILT + [(0, 0)] * 11, np.int64)
+    f0, f1 = ft[filt, 0], ft[filt, 1]
+    s1 = np.concatenate(([0], t[:-1]))
+    s2 = np.concatenate(([0, 0], t[:-2]))[:len(t)]
+    pred = (s1 * f0 + s2 * f1 + 32) >> 6
+    nib = np.zeros(len(t), np.int64)
+    count = np.zeros(len(t), np.int64)
+    free = (t > -32768) & (t < 32767)
+    g = ((t - pred) << sh) >> 12
+    for d in (-1, 0, 1):
+        n = g + d
+        hit = free & (n >= -8) & (n < 8) & ((((n << 12) >> sh) + pred) == t)
+        nib = np.where(hit, n, nib)
+        count += hit
+    for n in range(-8, 8):
+        v = np.clip(((n << 12) >> sh) + pred, -32768, 32767)
+        hit = ~free & (v == t)
+        nib = np.where(hit & (count == 0), n, nib)
+        count += hit
+    good = (count == 1).reshape(nb, 28).all(axis=1)
+    nib = (nib & 15).reshape(nb, 14, 2)
+    st = (nib[:, :, 0] | (nib[:, :, 1] << 4)).astype(np.uint8)
+    out = bytearray(16 * nb)
+    for j in range(nb):
+        if j in raw:
+            # kept steps: they must give back the pcm too (from the pcm's own last two samples)
+            i = 28 * j
+            got, _, _ = decode_block(heads[2 * j:2 * j + 2] + raw[j], int(s1[i]), int(s2[i]))
+            if got != pcm[i:i + 28]:
+                return None
+            out[16 * j:16 * j + 16] = heads[2 * j:2 * j + 2] + raw[j]
+        elif not good[j]:
+            return None
+        else:
+            out[16 * j:16 * j + 16] = heads[2 * j:2 * j + 2] + st[j].tobytes()
+    return bytes(out)
+
+
 def apply(buf, files, txt):
     """files: {wav name: bytes}"""
     for line in txt.splitlines():
@@ -206,6 +284,11 @@ def apply(buf, files, txt):
         if len(pcm) != nb * 28:
             raise ValueError("%s: %d samples, the file has room for %d" % (name, len(pcm), nb * 28))
         raw = {int(r.split(":")[0]): bytes.fromhex(r.split(":")[1]) for r in raws.split(",")} if raws != "-" else {}
+        steps = steps_all(bytes.fromhex(heads), pcm, raw)
+        if steps is not None:
+            buf[p:p + 16 * nb] = steps
+            continue
+        # an edited sound (some output no step gives exactly): block by block, the nearest steps
         s1 = s2 = 0
         for j in range(nb):
             head = bytes.fromhex(heads[4 * j:4 * j + 4])

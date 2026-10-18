@@ -10,7 +10,7 @@ PNG looks right); a texture with alpha above 0x80 keeps the GS value as is ("alp
 zeroed; `assemble(skeleton, records, images)` rebuilds the file. A texture is converted only when the rebuild gives
 back its exact bytes and every byte of its IMAGE data is decided by the texture (else it stays in the skeleton).
 """
-import struct, zlib
+import functools, struct, zlib
 import numpy as np
 import bisect
 from gs_tables import BLOCK32, BLOCK16, BLOCK16S, COL32, COL16, COL8_FIRST, COL4_FIRST
@@ -75,8 +75,15 @@ def packet_info(d, packet, size, blt):
         return None
     return packet + 0x60, length, w, h, psm, bw
 
+@functools.lru_cache(maxsize=64)
 def bitmap(bp, bw, psm, w, h):
-    """GS-memory bit addresses of every bit of a w x h rectangle, in row-major pixel order, LSB first."""
+    """GS-memory bit addresses of every bit of a w x h rectangle, in row-major pixel order, LSB first (cached: the
+    same rectangles come back for the exactness test; read-only)."""
+    a, nb = _bitmap(bp, bw, psm, w, h)
+    a.setflags(write=False)
+    return a, nb
+
+def _bitmap(bp, bw, psm, w, h):
     ys, xs = np.mgrid[0:h, 0:w]
     a, nb = addr(bp, bw, psm, xs.ravel(), ys.ravel())
     return (a[:, None] + np.arange(nb)[None, :]).ravel(), nb
@@ -165,13 +172,18 @@ def scan(data):
     return out
 
 def gather(src_bits, src_addr, dst_addr):
-    """Values at dst bit addresses after writing the bits src_bits to src_addr (unwritten bits: -1)."""
-    order = np.argsort(src_addr, kind="stable")
-    sa = src_addr[order]
-    idx = np.searchsorted(sa, dst_addr)
-    idx[idx >= len(sa)] = 0
-    hit = sa[idx] == dst_addr
-    vals = np.where(hit, src_bits[order][idx], -1)
+    """Values at dst bit addresses after writing the bits src_bits (0/1) to src_addr (unwritten bits: -1); where an
+    address is written twice, the first write counts. A table over the written range (the addresses of one upload
+    are close together), much faster than sorting."""
+    if len(src_addr) == 0:
+        return np.full(len(dst_addr), -1, np.int64)
+    lo = int(src_addr.min())
+    table = np.full(int(src_addr.max()) - lo + 1, -1, np.int8)
+    table[(src_addr - lo)[::-1]] = src_bits[::-1]  # reversed: the last assignment, the first write, stays
+    rel = dst_addr - lo
+    inside = (rel >= 0) & (rel < len(table))
+    vals = np.full(len(dst_addr), -1, np.int64)
+    vals[inside] = table[rel[inside]]
     return vals
 
 def payload_bits(data, off, n):
@@ -305,7 +317,22 @@ def png_read(blob):
 
 # ------------------------------------------------------------------------------------------------ convert
 def _all_in_once(a, b):
-    """every value of a is in b, and a has no value twice (sorting: faster than np.unique / np.isin on large arrays)"""
+    """every value of a is in b, and a has no value twice (tables over the addresses' range; sorting when the range is
+    very wide)"""
+    if len(a) == 0:
+        return True
+    if len(b) == 0:
+        return False
+    lo = int(min(a.min(), b.min()))
+    span = int(max(a.max(), b.max())) - lo + 1
+    if span <= 1 << 26:
+        seen = np.zeros(span, np.bool_)
+        seen[a - lo] = True
+        if int(np.count_nonzero(seen)) != len(a):
+            return False  # some value twice
+        inb = np.zeros(span, np.bool_)
+        inb[b - lo] = True
+        return bool(inb[a - lo].all())
     sa = np.sort(a, kind="stable")
     if len(sa) > 1 and not (sa[1:] != sa[:-1]).all():
         return False

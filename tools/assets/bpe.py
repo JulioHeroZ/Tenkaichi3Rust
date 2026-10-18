@@ -42,7 +42,8 @@ def expand(d):
                 v = bytes([s]) if left[s] == s else exp(left[s]) + exp(right[s])
                 memo[s] = v
             return v
-        out.append(b"".join(map(exp, d[p:p + n])))
+        tab = [exp(s) for s in range(256)]  # every symbol's bytes, then the block by table lookups (in C)
+        out.append(b"".join(map(tab.__getitem__, d[p:p + n])))
         p += n
     data = b"".join(out)
     assert p == end and len(data) == size, (p, end, len(data), size)

@@ -15,8 +15,8 @@ The steps:
  6. the movies' MPEG-2 video, unchanged (pss_video.py; the game decodes it in Rust).
 Each step is skipped when its result is already there, so it can be stopped and run again.
 
-Updating: the installation leaves assets/instalacao.txt with the version of the data (a hash of the tools that make
-them, data_version) and the kind of installation. Installing again in that folder with the same data version and kind
+Updating: the installation leaves assets/instalacao.txt with the version of the data (DATA_VERSION, changed by hand
+when the tools' output changes) and the kind of installation. Installing again in that folder with the same data version and kind
 only replaces the programs (Tenkaichi3.exe, its libraries, Desinstalar.exe) and keeps the data: no disc image needed,
 a few seconds. When the tools changed, or the kind did, or with --do-zero, it installs from the start.
 
@@ -28,7 +28,7 @@ Optionally the HD texture packs (tools/install/texturas.py): --texturas-2x / --t
 
 The installer's window (Instalar Tenkaichi 3.exe, tools/install/src/bin/instalador.rs) runs this.
 """
-import argparse, hashlib, os, subprocess, sys, shutil, time
+import argparse, os, subprocess, sys, shutil, time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -36,25 +36,23 @@ PY = sys.executable
 TOOLS = ROOT / "tools"
 BIN = ROOT / "bin"  # the player package's ready programs (tools/install/empacotar.py)
 EXE = ".exe" if os.name == "nt" else ""
-VERSION = "0.2.2"  # the installer's, shown in Settings > Apps
+VERSION = "0.2.3"  # the installer's, shown in Settings > Apps
 STAMP = "instalacao.txt"  # in assets/: what is installed there
 
 
+# The version of the data the tools make. Change it whenever the conversion's output changes (tools/assets, pack.py,
+# extract_iso.py, the export in src/main.rs, the tables' layout): installations with another one are made again from
+# the disc; with this one they are only updated. A change that only makes the tools faster keeps it (the output is
+# the same: check it byte for byte). It started as a hash of those tools (18/10/2026).
+DATA_VERSION = "9ea91721bcb96073"
+
+
 def data_version(root=ROOT):
-    """the version of the installed data: a hash of everything that makes them (the conversion tools, the tables'
-    layout, the raw copy and the audio's conversion). The packaged installer carries it in dados.versao (its tools
-    are there, bt3-install's sources are not); from the project it is worked out."""
+    """the version of the installed data (DATA_VERSION; the packaged installer also carries it in dados.versao)"""
     ready = root / "dados.versao"
     if ready.exists():
         return ready.read_text().strip()
-    files = sorted(f for f in (root / "tools" / "assets").glob("*.py") if not f.name.startswith("make_"))
-    files += [root / "tools" / "install" / n for n in ("extract_iso.py", "pack.py", "src/main.rs")]
-    files += [root / "tools" / "translate" / "c2rs" / "tables_from_elf.py", root / "game" / "src" / "gen" / "data.rs"]
-    h = hashlib.sha256()
-    for f in files:
-        h.update(f.relative_to(root).as_posix().encode() + b"\0")
-        h.update(f.read_bytes().replace(b"\r\n", b"\n") + b"\0")
-    return h.hexdigest()[:16]
+    return DATA_VERSION
 
 
 def read_stamp(dest):

@@ -76,9 +76,9 @@ jogo compilado dentro).
 * `tools\install\gerar_instalador.cmd` faz as duas coisas em segundo plano (janela minimizada): testa e, se passar,
   gera o instalador. O andamento fica em `dist\gerar.log`.
 
-Atualizar: o instalador deixa `assets\instalacao.txt` com a versão dos dados (um hash das ferramentas que os
-fazem). Instalando de novo na mesma pasta, com os mesmos dados e o mesmo tipo, ele só troca os programas, em
-segundos e sem a imagem do disco. Se as ferramentas mudaram, refaz tudo; a caixa "Refazer tudo do zero" força isso.
+Atualizar: o instalador deixa `assets\instalacao.txt` com a versão dos dados (`DATA_VERSION` em
+`tools/install/instalar.py`, que muda quando a saída das ferramentas muda). Instalando de novo na mesma pasta, com os mesmos dados e o mesmo tipo, ele só troca os programas, em
+segundos e sem a imagem do disco. Se a versão dos dados mudou, refaz tudo; a caixa "Refazer tudo do zero" força isso.
 
 ## Modificar
 

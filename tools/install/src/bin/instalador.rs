@@ -924,7 +924,7 @@ fn progress_of(line: &str, dev: bool) -> Option<(f64, String)> {
     // files_extract.py: "<n> files, <m> textures (<s>s) of <total>" every 100 files (older: without the total)
     if let Some((n, rest)) = line.split_once(" files, ") {
         if let Ok(n) = n.trim().parse::<f64>() {
-            let total = rest.rsplit_once(" of ").and_then(|(_, t)| t.trim().parse::<f64>().ok()).unwrap_or(3400.0).max(1.0);
+            let total = rest.rsplit_once(" of ").and_then(|(_, t)| t.split(';').next()?.trim().parse::<f64>().ok()).unwrap_or(3400.0).max(1.0);
             return Some((160.0 + 600.0 * (n / total).min(1.0), format!("Convertendo os arquivos do jogo (4 de 6): {n} de {total}")));
         }
     }
