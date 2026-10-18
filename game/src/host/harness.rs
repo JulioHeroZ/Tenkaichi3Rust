@@ -23,8 +23,10 @@ pub fn wrap_Progress_Main(c: &mut Ctx, arg: i32) -> i32 {
     let replay = std::env::var("BT3_REPLAY").ok();
     if replay.is_none() && std::env::var("BT3_DEMO").is_err() {
         c.host.menu_mode = true;
+        super::gs::gpu::MENU_MODE.store(true, std::sync::atomic::Ordering::Relaxed);
         let r = F::__real_Progress_Main(c, arg);
         c.host.menu_mode = false;
+        super::gs::gpu::MENU_MODE.store(false, std::sync::atomic::Ordering::Relaxed);
         c.host.from_menu = true;
         return r;
     }
@@ -199,6 +201,7 @@ pub fn run_main() -> i32 {
     // the game's data tables: data/tables.txt of the assets (host/tables.rs). BT3_TABLES=<catalog> loads the PC
     // catalog instead (the extraction's own file) and checks tables.txt against it.
     let assets_dir = super::files::assets_root(&c);
+    super::texpack::set_root(&assets_dir);
     // the player install keeps the open files in packs (assets/*.bt3pak)
     match super::vfs::mount(&assets_dir) {
         Ok(0) => {}

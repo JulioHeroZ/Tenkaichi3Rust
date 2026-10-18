@@ -15,7 +15,7 @@ Um workspace Cargo com duas crates (`game`, `tools/install`), mais ferramentas e
 | `src/tu/` | as unidades de tradução do C, geradas por `tools/translate` (não editar à mão) |
 | `src/gen/` | funções, dados e ligações geradas pelo tradutor. Nenhum dado do jogo: as tabelas ficam em `assets/data/tables.txt`, lidas ao abrir (`host/tables.rs`). |
 | `src/rt/` | runtime da tradução: memória com os endereços do PS2, float do PS2 bit a bit |
-| `src/host/` | os serviços de PC: arquivos e formatos abertos (`assets.rs`, `files.rs`), imagem (`gs/`), som (`snd.rs`), vídeos (`movie.rs`), saves e telas próprias (`saves.rs`, `ui.rs`, `title.rs`), configurações (`settings.rs`) |
+| `src/host/` | os serviços de PC: arquivos e formatos abertos (`assets.rs`, `files.rs`), imagem (`gs/`), som (`snd.rs`), vídeos (`movie.rs`), saves e telas próprias (`saves.rs`, `ui.rs`, `title.rs`), a página Graphics da tela de opções (`options.rs`), configurações (`settings.rs`), texturas HD (`texpack.rs`) |
 | `src/bin/` | ferramentas: `bt3-assetc` (compilador de recursos), `difftest`, `tenkaichi3` (o jogo instalado: janela sem console, acha `assets/` sozinho) |
 | `tests/` | testes de integração |
 | `meta/` | dados do tradutor; só `_host.json` e `_index.json` entram no Git |
@@ -35,6 +35,7 @@ Um workspace Cargo com duas crates (`game`, `tools/install`), mais ferramentas e
 |---|---|
 | `files/` | cada arquivo do jogo em formatos abertos, agrupado por tipo e com nome (`lutadores/Goku (Early)/01423 roupa 1/`, `cenários/12 Kame House/00380 cenário/`...; `tools/assets/organize.py`). O número no começo do nome é como o jogo acha o arquivo. |
 | `audio/streams/` | músicas e vozes em WAV |
+| `textures/` | os pacotes de texturas HD, se instalados: `2x` (1080p) e `4x` (4K), arquivos `.dds` do Dolphin ([texture-packs.md](texture-packs.md)) |
 | `video/` | vídeos de abertura e encerramento: o MPEG-2 do disco, sem conversão (`zs3usop.m2v`, `zs3used.m2v`), decodificado pelo jogo (`host/mpeg2.rs`) |
 | `_legacy/raw/` | cópia dos arquivos do disco: entrada da extração e da verificação; o jogo não a lê |
 

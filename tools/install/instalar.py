@@ -15,7 +15,11 @@ The steps:
  6. the movies' MPEG-2 video, unchanged (pss_video.py; the game decodes it in Rust).
 Each step is skipped when its result is already there, so it can be stopped and run again.
 
+Optionally the HD texture packs (tools/install/texturas.py): --texturas-2x / --texturas-4x baixar (download) or a
+.rar or folder the user has.
+
     python tools/install/instalar.py <disc.iso> [--modo jogador|desenvolvedor] [--destino <folder>]
+                                     [--texturas-2x baixar|<file.rar>|<folder>] [--texturas-4x ...]
 
 The installer's window (Instalar Tenkaichi 3.exe, tools/install/src/bin/instalador.rs) runs this.
 """
@@ -123,7 +127,7 @@ def register(dest, mode):
             return
 
 
-def install(iso, mode, dest):
+def install(iso, mode, dest, textures=()):
     """the game in `dest`: Tenkaichi3.exe and its libraries, and assets/ with the game's data, in packs (player) or as
     editable open files (developer); work files under dest/_instalacao, deleted at the end"""
     dest = Path(dest)
@@ -170,6 +174,9 @@ def install(iso, mode, dest):
     if opening.exists():
         run("ícone do jogo", [str(program("bt3-install", "bt3-install", "bt3-install")), "icone", str(opening),
                               str(dest / "Tenkaichi3.ico"), str(dest / ("Tenkaichi3" + EXE)), str(dest / ("Desinstalar" + EXE))])
+    for which, source in textures:
+        if source:
+            run("texturas HD %s" % which, [PY, "-u", str(TOOLS / "install" / "texturas.py"), which, source, str(dest)])
     shutil.rmtree(work, ignore_errors=True)
     shortcuts(dest / ("Tenkaichi3" + EXE), dest)
     register(dest, mode)
@@ -188,8 +195,10 @@ def main():
     p.add_argument("--modo", choices=["jogador", "desenvolvedor"], default="jogador",
                    help="jogador: os dados em pacotes; desenvolvedor: os arquivos do jogo editáveis")
     p.add_argument("--destino", default=None, help="pasta do jogo (padrão: Program Files (x86)\\Tenkaichi 3)")
+    p.add_argument("--texturas-2x", default=None, help="texturas HD 1080p: baixar, ou um .rar ou uma pasta que você já tem")
+    p.add_argument("--texturas-4x", default=None, help="texturas HD 4K: baixar, ou um .rar ou uma pasta que você já tem")
     a = p.parse_args()
-    install(a.iso, a.modo, a.destino or default_dest())
+    install(a.iso, a.modo, a.destino or default_dest(), [("2x", a.texturas_2x), ("4x", a.texturas_4x)])
 
 
 if __name__ == "__main__":

@@ -7,7 +7,12 @@ into an offscreen EGL context (Mesa) for tests; `BT3_GS=1` keeps the software re
   target per frame-buffer address at `BT3_SCALE` (default 2) times the PS2 resolution, textures decoded from GS
   memory and cached by TEX0 / TEXA / page hashes, the native depth-table, outline, DATE and alpha-copy passes,
   frame-buffer uploads (movies), present with 4:3 letterbox, screenshots (`BT3_SHOT=n` -> `shots/gpu_NNNNN.png`).
-* `src/host/gs/shaders/` — the C port's shaders unchanged (Vulkan GLSL 450); `translate()` turns them into GL 3.3
+* widescreen (the C port's layout): `Port_WideFactor` widens the game's projection; 2D drawn into the picture is
+  narrowed about the HUD's anchors (markers 0x10..0x14) or the middle; the menus stay 4:3 over a blurred copy of
+  themselves (`present`). Settings applied between frames (`apply_settings`: full screen, window size, scale).
+* texture packs (`host/texpack.rs`, docs/texture-packs.md): replacements found in `texture_get`, decoded on worker
+  threads, drawn with mode 3 (`orig` = original size, largest alpha, alpha scale).
+* `src/host/gs/shaders/` — the C port's shaders (gs.frag: the pack's alpha scale added) (Vulkan GLSL 450); `translate()` turns them into GL 3.3
   core with the C port's rules (flip of gl_Position.y, z range without glClipControl).
 * `src/host/gs/hle.rs` — vertex programs 0, 1, 2a/2b, 4, 6, 7, 8 (recognised by size) handed to their shaders
   instead of the VU1 interpreter, as `gs_vu1.c` does. `BT3_VU_INTERP=1` turns this off.

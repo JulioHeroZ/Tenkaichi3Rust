@@ -81,6 +81,7 @@ gl_funcs! {
     TexImage2D: fn(GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum, *const c_void);
     TexSubImage2D: fn(GLenum, GLint, GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, *const c_void);
     TexParameteri: fn(GLenum, GLenum, GLint);
+    GenerateMipmap: fn(GLenum);
     DeleteTextures: fn(GLsizei, *const GLuint);
     GenFramebuffers: fn(GLsizei, *mut GLuint);
     BindFramebuffer: fn(GLenum, GLuint);
@@ -116,6 +117,7 @@ pub const TEXTURE_WRAP_T: GLenum = 0x2803;
 pub const TEXTURE_MAX_LEVEL: GLenum = 0x813D;
 pub const NEAREST: GLint = 0x2600;
 pub const LINEAR: GLint = 0x2601;
+pub const LINEAR_MIPMAP_LINEAR: GLint = 0x2703;
 pub const CLAMP_TO_EDGE: GLint = 0x812F;
 pub const REPEAT: GLint = 0x2901;
 pub const ARRAY_BUFFER: GLenum = 0x8892;

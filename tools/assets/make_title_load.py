@@ -1,9 +1,9 @@
-"""Draws the text of the title screen's third menu plate ("Load Game") in the style of the game's own plate texts
-(the 512 x 64 textures of the title movie: a gradient fill, a 3-pixel dark outline and a faint shadow), one row of
-32 pixels for the lit plate and one for the plate off. game/src/host/title.rs puts it on the plate,
-with the colours of the game's palette.
+"""Draws the texts of the title screen's third and fourth menu plates ("Load Game", "Options") in the style of
+the game's own plate texts (the 512 x 64 textures of the title movie: a gradient fill, a 3-pixel dark outline and a
+faint shadow): for each text one row of 32 pixels for the lit plate and one for the plate off. game/src/host/title.rs
+puts them on the plates, with the colours of the game's palette.
 
-    python3 make_title_load.py <out folder: game/src/host> [text] [preview.png]
+    python3 make_title_load.py <out folder: game/src/host> [preview.png]
 """
 import sys, os
 import numpy as np
@@ -88,13 +88,15 @@ def draw(text, style):
     return np.clip(rgba + 0.5, 0, 255).astype(np.uint8)
 
 
+TEXTS = ["Load Game", "Options"]
+
+
 def main():
     out = sys.argv[1]
-    text = sys.argv[2] if len(sys.argv) > 2 else "Load Game"
-    img = np.concatenate([draw(text, "on"), draw(text, "off")], axis=0)
+    img = np.concatenate([draw(t, s) for t in TEXTS for s in ("on", "off")], axis=0)
     Image.fromarray(img, "RGBA").save(os.path.join(out, "title_load.png"))
-    if len(sys.argv) > 3:
-        Image.fromarray(img, "RGBA").save(sys.argv[3])
+    if len(sys.argv) > 2:
+        Image.fromarray(img, "RGBA").save(sys.argv[2])
 
 
 if __name__ == "__main__":

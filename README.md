@@ -16,7 +16,8 @@ Baixe **`Instalar Tenkaichi 3.exe`** (na página de versões do projeto) e abra.
 2. escolha o tipo de instalação:
    * **Jogar:** o jogo pronto, com os dados em poucos pacotes, como um jogo de PC;
    * **Desenvolvedor:** o mesmo jogo, com todos os arquivos do jogo editáveis (PNG, glTF, WAV, JSON), para mods;
-3. escolha a pasta (padrão: `C:\Program Files (x86)\Tenkaichi 3`) e clique em **Instalar**.
+3. escolha a pasta (padrão: `C:\Program Files (x86)\Tenkaichi 3`);
+4. se quiser, marque as **texturas HD** (1080p e/ou 4K: veja abaixo) e clique em **Instalar**.
 
 A barra de progresso mostra cada passo. A primeira instalação demora bastante, e pode ser cancelada e retomada:
 os passos prontos são pulados. Os dois tipos criam `Tenkaichi3.exe` e atalhos na área de trabalho e no menu
@@ -32,7 +33,18 @@ O que o instalador faz:
 4. converte todos os arquivos para formatos abertos (PNG, glTF, WAV, JSON, texto);
 5. prepara os recursos de PC e organiza as pastas por tipo e nome;
 6. separa o vídeo MPEG-2 dos filmes, sem converter (o jogo o decodifica em Rust);
-7. instala o jogo: os dados empacotados (Jogar) ou como arquivos soltos (Desenvolvedor).
+7. instala o jogo: os dados empacotados (Jogar) ou como arquivos soltos (Desenvolvedor);
+8. se marcadas, baixa e extrai as texturas HD.
+
+**Imagem:** o jogo abre em **16:9** por padrão. Nas lutas a câmera mostra mais dos lados, sem esticar nada, e a
+interface fica nas bordas. Os menus, desenhados para 4:3, aparecem no meio sobre uma cópia desfocada de si mesmos.
+
+**Texturas HD:** o remaster de texturas do canal **PLAYANDO**
+([vídeo](https://www.youtube.com/watch?v=rJW7idQDqVc)), feito para a versão de Wii no Dolphin, funciona aqui: as
+texturas do Wii são as mesmas do PS2, índice por índice, então o jogo acha cada arquivo do pacote pelo nome que o
+Dolphin dá. O instalador baixa os pacotes dos links do autor no Google Drive (1080p: 1 GB, 4K: 3,4 GB) ou usa um
+`.rar` ou uma pasta que você já tenha. Eles ficam em `assets\textures\2x` e `assets\textures\4x` da pasta do jogo.
+Os pacotes não fazem parte deste projeto ([docs/texture-packs.md](docs/texture-packs.md)).
 
 **Controles e opções:**
 * **Teclado:**
@@ -41,8 +53,11 @@ O que o instalador faz:
   * U = L1, O = R1, 7 = L2, 9 = R2;
   * Enter = Start, Shift direito = Select.
 * **Controles:** Xbox e PlayStation, pelo SDL3, com vibração ([docs/controllers.md](docs/controllers.md)).
-* **Configurações:** F1 abre as configurações (tela cheia, resolução interna 1x a 4x, teclas), guardadas em
-  `Documentos\My Games\Tenkaichi3Rust\settings.ini`. F11 alterna a tela cheia. Esc pergunta se quer sair.
+* **Opções:** a tela de opções do próprio jogo (também pela tela inicial, em **Options**) ganhou a página
+  **Graphics**: resolução (720p, 1080p, 1440p, 4K), proporção (4:3, 16:10, 16:9, 21:9), qualidade das texturas
+  (Low = as do PS2, Medium, High = pacote 1080p, Ultra = pacote 4K) e tela cheia. Tudo vale na hora e fica em
+  `Documentos\My Games\Tenkaichi3Rust\settings.ini`.
+* **Extras do PC:** F1 (teclas do controle no teclado). F11 alterna a tela cheia. Esc pergunta se quer sair.
 * **Saves:** 3 perfis em `Documentos\My Games\Tenkaichi3Rust\saves`, com salvamento automático e "Load Game" na
   tela de título ([docs/saves.md](docs/saves.md)). Se o jogo parar por um erro, o motivo fica em
   `Documentos\My Games\Tenkaichi3Rust\log.txt`.
@@ -107,10 +122,8 @@ Histórico do projeto: [docs/history.md](docs/history.md).
 
 ## Próximas etapas
 
-1. Instalador com dois modos:
-   * **jogador:** executável pronto e dados empacotados, sem Python nem Rust;
-   * **desenvolvedor:** o que existe hoje.
-2. Dar nomes e estrutura aos ~6,6 MB restantes.
+1. Dar nomes e estrutura aos ~6,6 MB restantes.
+2. Cheats e outros extras no F1.
 3. Jogo online.
 
 ## Licença

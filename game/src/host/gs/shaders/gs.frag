@@ -15,7 +15,7 @@ layout(set = 3, binding = 0) uniform Params {
                  // texture pack's replacement, see below)
     vec4 rect;   // textured from a frame buffer (mode.x == 2): the uv range that may be sampled
     vec4 orig;   // a texture pack's replacement: xy = the original texture's size (2D art, misc.w < 0);
-                 // z = the original's largest alpha
+                 // z = the original's largest alpha; w = the pack's alpha scale (0.5: 255 opaque)
 } p;
 // 1.0 where v is not negative
 vec2 step2(vec2 v) { return vec2(v.x >= 0.0 ? 1.0 : 0.0, v.y >= 0.0 ? 1.0 : 0.0); }
@@ -61,6 +61,7 @@ void main() {
         }
         if (p.mode.x == 2) uv = clamp(uv, p.rect.xy, p.rect.zw);
         vec4 t = texture(tex, uv);
+        if (p.mode.x == 3) t.a *= p.orig.w; // the pack's own alpha scale (0.5: 255 is opaque in a Wii pack)
         if (p.mode.x == 1 || p.mode.x == 3) t.a *= k; // a texture from GS memory keeps the GS alpha (0x80 opaque, up to 0xFF)
         // A texture pack's replacement. The game does more with a texture's alpha than blend: the alpha it writes
         // into the picture is tested by later draws, bit 7 as a mask (a texture that stays at 0x7F never sets it,

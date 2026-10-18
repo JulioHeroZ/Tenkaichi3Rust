@@ -59,7 +59,7 @@ def main():
     shutil.copyfile(target / "release" / "desinstalar.exe", STAGE / "bin" / "desinstalar.exe")
     for lib in ("SDL3.dll", "libiconv-2.dll", "README.md"):
         shutil.copyfile(ROOT / "vendor" / "windows" / lib, STAGE / "bin" / lib)
-    for rel in ["tools/install/instalar.py", "tools/install/extract_iso.py", "tools/install/pack.py",
+    for rel in ["tools/install/instalar.py", "tools/install/extract_iso.py", "tools/install/pack.py", "tools/install/texturas.py",
                 "tools/translate/c2rs/tables_from_elf.py", "game/src/gen/data.rs", "LICENSE"]:
         (STAGE / rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / rel, STAGE / rel)

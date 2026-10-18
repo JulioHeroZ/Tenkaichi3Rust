@@ -355,3 +355,38 @@ posteriormente, online.
 
 Sem porcentagem global confiável. A tradução de todas as funções não comprova
 que todos os recursos estejam integrados e corretos no PC.
+
+## 2026-10-18: 16:9, opções gráficas no menu do jogo, texturas HD
+
+* **16:9 por padrão** (`host/settings.rs` aspect; também 4:3, 16:10, 21:9).
+  * `Port_WideFactor` alarga a projeção, o recorte do cenário e as proporções dos efeitos.
+  * O renderizador estreita a arte 2D em torno de pontos fixos: as bordas e o meio da interface da luta, pelos
+    marcadores do código da interface.
+  * São as regras do port em C, agora portadas para o Rust.
+  * Os menus, compostos para 4:3, aparecem no meio sobre uma cópia desfocada e escurecida de si mesmos. Esticados,
+    deformavam os personagens; abertos para os lados, mostravam faixas pretas e arte cortada.
+* **Options > Graphics** (`host/options.rs`), na tela de opções do próprio jogo:
+  * uma quinta linha na página principal, desenhada como uma cópia de uma placa do filme (como o "Load Game" da
+    tela inicial);
+  * uma página feita a partir do filme da página Screen, com resolução, proporção, qualidade das texturas e tela
+    cheia, mais Default;
+  * textos no estilo do jogo, gerados por `tools/assets/make_option_labels.py`, inclusive o título da página na
+    janela do ícone;
+  * tudo vale na hora: a resolução refaz os buffers do renderizador e ajusta o tamanho da janela.
+* **Tela inicial:** o item **Options** (`host/title.rs`, agora com quatro itens) abre a mesma tela por cima da
+  tela inicial e volta para ela. Aberta dali, a tela não roda o fluxo de salvar do jogo, porque o perfil pode ainda
+  não estar carregado.
+* **F1:** ficou só com extras do PC (as teclas do controle no teclado).
+* **Texturas HD** (`host/texpack.rs`, [texture-packs.md](texture-packs.md)):
+  * o pacote do canal PLAYANDO para o Dolphin (Wii), encontrado pelos hashes do Dolphin;
+  * as duas metades cinza das texturas com transparência são juntadas numa imagem colorida;
+  * qualidades Low, Medium, High e Ultra;
+  * o instalador baixa os pacotes ou usa um `.rar` ou uma pasta que a pessoa já tenha (`tools/install/texturas.py`).
+* **Verificado na nuvem** (renderizador headless):
+  * tela inicial, opções e luta de demonstração em 16:9;
+  * página Graphics, com a troca de resolução e de proporção no meio do jogo;
+  * texturas HD na tela inicial e na luta (logo, personagens, céu e rochas com as cores certas).
+* **Ainda não verificado:**
+  * o download pelo Google Drive e a extração do RAR no Windows;
+  * a janela em 16:9 com o fundo desfocado dos menus (os testes não têm janela);
+  * a interface da luta nas bordas.

@@ -6,14 +6,21 @@
 //! the pages they occupy), and at the end of the frame the list is replayed with OpenGL 3.3 into one render target
 //! per GS frame-buffer address, at SCALE times the PS2's resolution. One buffer drawn into another (the game's
 //! screen effects) samples the target directly.
-//! Rust version of the C port's GPU back end (port/src/gs/gs_draw.c capture, gs_gl.c replay, shaders/*), without
-//! the texture packs, the widescreen layout and the settings window. Drawing, not simulation: host floats.
+//! Rust version of the C port's GPU back end (port/src/gs/gs_draw.c capture, gs_gl.c replay, shaders/*), with its
+//! widescreen layout (see `draw`); without the texture packs and the settings window. Drawing, not simulation.
 #![allow(clippy::too_many_arguments)]
 use super::gl::{self, Gl, GLenum, GLuint};
 use super::platform::{Input, Surface};
 use super::Gs;
 use std::collections::HashMap;
 use std::ffi::c_void;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// The menus are running (host/harness.rs sets it around Progress_Main): their pages are composed for 4:3 (2D and
+/// 3D placed against each other, backdrops drawn to the 4:3 edges), so in widescreen they keep 4:3: the projection
+/// is not widened (Port_WideFactor), 2D is not narrowed, and the page is shown in the middle over a blurred copy
+/// of itself (`present`). (Laid out wide, the pages showed black bands and cut-off art at the sides.)
+pub static MENU_MODE: AtomicBool = AtomicBool::new(false);
 
 pub const GS_W: i32 = 1024;
 pub const GS_H: i32 = 1024;
@@ -85,6 +92,8 @@ struct Draw {
     mode: [i32; 4],
     misc: [f32; 4],
     rect: [f32; 4],
+    /// a texture pack's replacement: the original's size, its largest alpha (1.0 = 0x80), the pack's alpha scale
+    orig: [f32; 4],
     blendc: f32,
     scissor: [i32; 4],
 }
@@ -117,17 +126,39 @@ struct Pipe {
 struct TexEntry {
     tex: GLuint,
     last: u32,
+    /// a texture pack's replacement (owned by `repl`): original size, largest alpha, the pack's alpha scale
+    repl: Option<(u32, u32, u32, f32)>,
+    /// the replacement asked for (its job key), and the original's size and largest alpha
+    want: Option<(u64, u32, u32, u32)>,
+}
+
+/// A texture pack's replacement on the card.
+struct Repl {
+    tex: GLuint,
+    alpha_scale: f32,
 }
 
 pub struct Gpu {
     gl: Gl,
     pub surface: Surface,
     scale: i32,
+    /// the HUD's side for the 2D that follows (markers 0x10..0x14 from the HUD code): 0 none, 1 left, 2 right,
+    /// 3 centre, 4 by position
+    anchor: i32,
+    /// the settings' change counter last applied, and the resolution / shape the window was sized for
+    settings_serial: Option<u32>,
+    window_for: (i32, i32),
     draws: Vec<Draw>,
     verts: Vec<Vtx>,
     targets: Vec<Target>,
     textures: HashMap<(u64, u64, u32), TexEntry>,
     last_tex: Option<((u64, u64, u32), GLuint)>,
+    /// texture packs (host/texpack.rs): the replacements on the card by job key, the jobs asked for, the
+    /// quality they are for, and what the last texture_get returned (original size, largest alpha)
+    repl: HashMap<u64, Repl>,
+    pending: std::collections::HashSet<u64>,
+    tex_quality: i32,
+    cur_repl: Option<(u32, u32, u32, f32)>,
     cluts: Vec<(u32, u32, GLuint)>,
     clut_memo: HashMap<u32, (u32, u32, u32)>,
     pipes: Vec<Pipe>,
@@ -135,6 +166,7 @@ pub struct Gpu {
     prog_dclut: GLuint,
     prog_outline: GLuint,
     prog_present: GLuint,
+    prog_backdrop: GLuint,
     prog_overlay: GLuint,
     overlay_tex: std::cell::Cell<GLuint>,
     overlay_serial: std::cell::Cell<u64>,
@@ -253,6 +285,23 @@ uniform vec2 uvScale;
 void main() { o = vec4(texture(tex, vUv * uvScale).rgb, 1.0); }
 "#;
 
+/// Behind a 4:3 menu page in a wider window: the page itself stretched to the window, blurred and darkened.
+const BACKDROP_FRAG: &str = r#"#version 330 core
+in vec2 vUv;
+out vec4 o;
+uniform sampler2D tex;
+uniform vec2 uvScale;
+void main() {
+    vec3 c = vec3(0.0);
+    for (int y = -3; y <= 3; y++) {
+        for (int x = -3; x <= 3; x++) {
+            c += texture(tex, (vUv + vec2(float(x), float(y)) * 0.018) * uvScale).rgb;
+        }
+    }
+    o = vec4(c / 49.0 * 0.42, 1.0);
+}
+"#;
+
 /// The port's own screens over the picture (host/ui.rs): the canvas as it is, with its alpha.
 const OVERLAY_FRAG: &str = r#"#version 330 core
 in vec2 vUv;
@@ -265,18 +314,25 @@ impl Gpu {
     pub fn new(headless: bool) -> Result<Box<Gpu>, String> {
         let surface = Surface::create(headless)?;
         let gl = Gl::load(&|n| surface.proc_address(n))?;
-        let scale = std::env::var("BT3_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or_else(|| crate::host::settings::get().scale).clamp(1, 8);
+        let scale = crate::host::settings::get().scale();
         let clip = surface.proc_address("glClipControl");
         let clip_control = !clip.is_null();
         let mut g = Box::new(Gpu {
             gl,
             surface,
             scale,
+            anchor: 0,
+            settings_serial: None,
+            window_for: (0, 0),
             draws: Vec::with_capacity(4096),
             verts: Vec::with_capacity(65536),
             targets: Vec::new(),
             textures: HashMap::new(),
             last_tex: None,
+            repl: HashMap::new(),
+            pending: std::collections::HashSet::new(),
+            tex_quality: crate::host::settings::get().textures,
+            cur_repl: None,
             cluts: Vec::new(),
             clut_memo: HashMap::new(),
             pipes: Vec::new(),
@@ -284,6 +340,7 @@ impl Gpu {
             prog_dclut: 0,
             prog_outline: 0,
             prog_present: 0,
+            prog_backdrop: 0,
             prog_overlay: 0,
             overlay_tex: std::cell::Cell::new(0),
             overlay_serial: std::cell::Cell::new(u64::MAX),
@@ -396,12 +453,15 @@ impl Gpu {
         // (the overlay's program first: the uniform below is set on the program made last, which is in use)
         self.prog_overlay = self.program(PRESENT_VERT, OVERLAY_FRAG, "overlay", &["tex"])?;
         self.prog_present = self.program(PRESENT_VERT, PRESENT_FRAG, "present", &["tex"])?;
+        self.prog_backdrop = self.program(PRESENT_VERT, BACKDROP_FRAG, "backdrop", &["tex"])?;
         let gl = &self.gl;
         unsafe {
             let name = std::ffi::CStr::from_ptr((gl.GetString)(gl::RENDERER) as *const i8).to_string_lossy().into_owned();
             let ver = std::ffi::CStr::from_ptr((gl.GetString)(gl::VERSION) as *const i8).to_string_lossy().into_owned();
             eprintln!("bt3: GL renderer: {name} ({ver})");
             (gl.Uniform2f)((gl.GetUniformLocation)(self.prog_present, b"uvScale\0".as_ptr()), 512.0 / GS_W as f32, 448.0 / GS_H as f32);
+            (gl.UseProgram)(self.prog_backdrop);
+            (gl.Uniform2f)((gl.GetUniformLocation)(self.prog_backdrop, b"uvScale\0".as_ptr()), 512.0 / GS_W as f32, 448.0 / GS_H as f32);
             (gl.GenBuffers)(1, &mut self.vbo);
             (gl.BindBuffer)(gl::ARRAY_BUFFER, self.vbo);
             (gl.BufferData)(gl::ARRAY_BUFFER, (MAX_VERTS * std::mem::size_of::<Vtx>()) as isize, std::ptr::null(), gl::STREAM_DRAW);
@@ -440,7 +500,9 @@ impl Gpu {
                 (gl.GenSamplers)(1, &mut self.samplers[i]);
                 let s = self.samplers[i];
                 (gl.SamplerParameteri)(s, gl::TEXTURE_MAG_FILTER, if lin { gl::LINEAR } else { gl::NEAREST });
-                (gl.SamplerParameteri)(s, gl::TEXTURE_MIN_FILTER, if lin { gl::LINEAR } else { gl::NEAREST });
+                // 8..15: the replacements of a texture pack on 3D, with their smaller copies
+                let min = if i & 8 != 0 { gl::LINEAR_MIPMAP_LINEAR } else if lin { gl::LINEAR } else { gl::NEAREST };
+                (gl.SamplerParameteri)(s, gl::TEXTURE_MIN_FILTER, min);
                 (gl.SamplerParameteri)(s, gl::TEXTURE_WRAP_S, if i & 2 != 0 { gl::CLAMP_TO_EDGE } else { gl::REPEAT });
                 (gl.SamplerParameteri)(s, gl::TEXTURE_WRAP_T, if i & 4 != 0 { gl::CLAMP_TO_EDGE } else { gl::REPEAT });
             }
@@ -586,15 +648,18 @@ impl Gpu {
         let key = (t0, texa, gen);
         if let Some((k, t)) = self.last_tex {
             if k == key {
+                self.cur_repl = self.textures.get(&key).and_then(|e| e.repl);
                 return t;
             }
         }
         let frame = self.frame;
         if let Some(e) = self.textures.get_mut(&key) {
             e.last = frame;
+            self.cur_repl = e.repl;
             self.last_tex = Some((key, e.tex));
             return e.tex;
         }
+        self.cur_repl = None;
         if self.textures.len() >= 8192 {
             let keep = frame.saturating_sub(120);
             let gl = &self.gl;
@@ -602,15 +667,23 @@ impl Gpu {
                 if e.last >= keep {
                     true
                 } else {
-                    unsafe { (gl.DeleteTextures)(1, &e.tex) };
+                    if e.repl.is_none() {
+                        unsafe { (gl.DeleteTextures)(1, &e.tex) };
+                    }
                     false
                 }
             });
         }
         let mut px = vec![0u32; (tw * th) as usize];
+        // indexed textures: the indices and the palette in index order too (to find a texture pack's file)
+        let pack = bits <= 8 && self.tex_quality > 0 && crate::host::texpack::available() && tw >= 8 && th >= 8;
+        let mut idx = if pack { vec![0u8; (tw * th) as usize] } else { Vec::new() };
         for y in 0..th {
             for x in 0..tw {
                 let c = gs.rd(tbp, tbw, psm, x, y);
+                if pack {
+                    idx[(y * tw + x) as usize] = c as u8;
+                }
                 px[(y * tw + x) as usize] = if bits > 8 {
                     gs.expand(c, psm)
                 } else if bits == 8 {
@@ -623,6 +696,41 @@ impl Gpu {
                 };
             }
         }
+        let mut want = None;
+        let mut ready = None;
+        if pack {
+            let n = if bits == 8 { 256u32 } else { 16 };
+            let pal: Vec<[u8; 4]> = (0..n)
+                .map(|c| {
+                    let p = if bits == 8 {
+                        let s = (c & 0xE7) | ((c & 8) << 1) | ((c & 0x10) >> 1);
+                        gs.rd(cbp, 1, cpsm, s & 15, s >> 4)
+                    } else {
+                        gs.rd(cbp, 1, cpsm, c & 7, c >> 3)
+                    };
+                    gs.expand(p, cpsm).to_le_bytes()
+                })
+                .collect();
+            if let Some(found) = crate::host::texpack::lookup(self.tex_quality, &idx, tw as usize, th as usize, bits, &pal) {
+                let amax = px.iter().map(|p| p >> 24).max().unwrap_or(0x80);
+                let job = found.key;
+                if let Some(r) = self.repl.get(&job) {
+                    ready = Some((r.tex, (tw, th, amax, r.alpha_scale)));
+                } else {
+                    if self.pending.insert(job) {
+                        let thumb = if found.files.len() > 1 { crate::host::texpack::thumb_of_original(&px, tw as usize, th as usize) } else { Vec::new() };
+                        crate::host::texpack::request(crate::host::texpack::Job { found, thumb });
+                    }
+                    want = Some((job, tw, th, amax));
+                }
+            }
+        }
+        if let Some((t, info)) = ready {
+            self.textures.insert(key, TexEntry { tex: t, last: frame, repl: Some(info), want: None });
+            self.cur_repl = Some(info);
+            self.last_tex = Some((key, t));
+            return t;
+        }
         let gl = &self.gl;
         let mut t = 0;
         unsafe {
@@ -632,9 +740,60 @@ impl Gpu {
             (gl.PixelStorei)(gl::UNPACK_ALIGNMENT, 1);
             (gl.TexImage2D)(gl::TEXTURE_2D, 0, gl::RGBA8 as i32, tw as i32, th as i32, 0, gl::RGBA, gl::UNSIGNED_BYTE, px.as_ptr() as *const c_void);
         }
-        self.textures.insert(key, TexEntry { tex: t, last: frame });
+        self.textures.insert(key, TexEntry { tex: t, last: frame, repl: None, want });
         self.last_tex = Some((key, t));
         t
+    }
+
+    /// The replacements decoded since the last frame put on the card, and the textures waiting for them switched
+    /// over (between frames: no recorded draw refers to the textures now).
+    fn texpack_collect(&mut self) {
+        let done = crate::host::texpack::finished();
+        if done.is_empty() {
+            return;
+        }
+        for d in done {
+            self.pending.remove(&d.key);
+            let Some(pic) = d.picture else { continue };
+            let gl = &self.gl;
+            let mut t = 0;
+            unsafe {
+                (gl.GenTextures)(1, &mut t);
+                (gl.BindTexture)(gl::TEXTURE_2D, t);
+                (gl.PixelStorei)(gl::UNPACK_ALIGNMENT, 1);
+                (gl.TexImage2D)(gl::TEXTURE_2D, 0, gl::RGBA8 as i32, pic.w as i32, pic.h as i32, 0, gl::RGBA, gl::UNSIGNED_BYTE, pic.rgba.as_ptr() as *const c_void);
+                (gl.GenerateMipmap)(gl::TEXTURE_2D);
+            }
+            self.repl.insert(d.key, Repl { tex: t, alpha_scale: pic.alpha_scale });
+            for e in self.textures.values_mut() {
+                if let Some((job, ow, oh, amax)) = e.want {
+                    if job == d.key {
+                        unsafe { (gl.DeleteTextures)(1, &e.tex) };
+                        e.tex = t;
+                        e.repl = Some((ow, oh, amax, pic.alpha_scale));
+                        e.want = None;
+                    }
+                }
+            }
+        }
+        self.last_tex = None;
+    }
+
+    /// Every texture made again (the texture quality changed).
+    fn textures_flush(&mut self) {
+        let gl = &self.gl;
+        for e in self.textures.values() {
+            if e.repl.is_none() {
+                unsafe { (gl.DeleteTextures)(1, &e.tex) };
+            }
+        }
+        self.textures.clear();
+        for r in self.repl.values() {
+            unsafe { (gl.DeleteTextures)(1, &r.tex) };
+        }
+        self.repl.clear();
+        self.pending.clear();
+        self.last_tex = None;
     }
 
     /// A 256-colour table at cbp (32-bit, the GS's index order undone) as a 256 x 1 texture.
@@ -818,6 +977,7 @@ impl Gpu {
         }
         let target = self.target_get(fbp, true)?;
         let mut d = Draw { target, tex: self.white, ..Default::default() };
+        let mut replaced = false;
         if !tme && sprite {
             self.targets[target].stale = false;
         }
@@ -856,14 +1016,25 @@ impl Gpu {
                 vs = th / GS_H as f32;
             } else {
                 d.tex = self.texture_get(gs, ctx);
+                if let Some((ow, oh, amax, ascale)) = self.cur_repl {
+                    // a texture pack's replacement: always filtered (several texels per original texel), with
+                    // its smaller copies on 3D (draw() takes them off again for 2D art)
+                    replaced = true;
+                    d.orig = [ow as f32, oh as f32, amax as f32 / 128.0, ascale];
+                }
             }
         }
         d.sampler = ((gs.s.tex1[ctx] >> 5) & 1) as i32 | if cl & 3 != 0 { 2 } else { 0 } | if (cl >> 2) & 3 != 0 { 4 } else { 0 };
+        if replaced {
+            d.sampler |= 1 | 8;
+        }
         d.pipeline = self.pipeline_get(gs, ctx, topo, vu);
         d.mode[0] = if !tme {
             0
         } else if d.tex_is_target {
             2
+        } else if replaced {
+            3
         } else {
             1
         };
@@ -903,6 +1074,7 @@ impl Gpu {
             && a.misc == b.misc
             && a.blendc == b.blendc
             && a.rect == b.rect
+            && a.orig == b.orig
             && a.scissor == b.scissor
     }
 
@@ -934,9 +1106,10 @@ impl Gpu {
             _ => 0,
         };
         let Some((mut d, us, vs)) = self.draw_state(gs, ctx, topo, ty == 6, 0) else { return };
+        let packed2d = (ty == 6 || fst) && d.mode[0] == 3;
         if ty == 6 || fst {
             d.sampler &= 7;
-            if !d.tex_is_target {
+            if !d.tex_is_target && !packed2d {
                 d.misc[3] = self.scale as f32;
             }
         }
@@ -954,6 +1127,46 @@ impl Gpu {
                 t[i] = v[i].t * vs;
                 q[i] = if v[i].q != 0.0 { v[i].q } else { 1.0 };
             }
+        }
+        if packed2d {
+            // A texture pack's replacement as 2D art (the C port's GsGpu_Draw): sampled per output pixel (it has
+            // several texels per original texel), but only inside the rectangle of the sheet this piece shows on
+            // the console: the original texels from the one its first GS pixel takes to the one its last takes.
+            // Without the limit the filtering reaches the neighbouring picture of the sheet.
+            let (mut lo, mut hi) = ([0i32; 2], [0i32; 2]);
+            for axis in 0..2 {
+                let size = if axis == 1 { th } else { tw };
+                let (mut pmin, mut pmax, mut cmin, mut cmax, mut c_at_min, mut c_at_max) = (0f32, 0f32, 0f32, 0f32, 0f32, 0f32);
+                for k in 0..n {
+                    let pos = if axis == 1 { v[k].y } else { v[k].x };
+                    let c = (if axis == 1 { t[k] } else { s[k] }) / (if ty == 6 { q[1] } else { q[k] }) * size;
+                    if k == 0 || pos < pmin {
+                        pmin = pos;
+                        c_at_min = c;
+                    }
+                    if k == 0 || pos > pmax {
+                        pmax = pos;
+                        c_at_max = c;
+                    }
+                    if k == 0 || c < cmin {
+                        cmin = c;
+                    }
+                    if k == 0 || c > cmax {
+                        cmax = c;
+                    }
+                }
+                let step = if pmax > pmin { (cmax - cmin) / (pmax - pmin) } else { 0.0 };
+                let rising = c_at_max >= c_at_min;
+                let first = if rising { cmin } else { cmin + step };
+                let lastc = if rising { cmax - step } else { cmax };
+                lo[axis] = (first + 1.0 / 64.0).floor() as i32;
+                hi[axis] = (lastc + if rising { 1.0 / 64.0 } else { -1.0 / 64.0 }).floor() as i32 + 1;
+                if hi[axis] <= lo[axis] {
+                    hi[axis] = lo[axis] + 1;
+                }
+            }
+            d.misc[3] = -(self.scale as f32);
+            d.rect = [lo[0] as f32 / tw, lo[1] as f32 / th, hi[0] as f32 / tw, hi[1] as f32 / th];
         }
         d.first = self.verts.len() as u32;
         let put = |o: &mut Vec<Vtx>, z: u32, x: f32, y: f32, s: f32, t: f32, q: f32, c: &super::Vertex| {
@@ -980,6 +1193,9 @@ impl Gpu {
                 put(&mut self.verts, v[i].z, v[i].x, v[i].y, s[i], t[i], q[i], c);
             }
         }
+        if (ty == 6 || fst) && !d.tex_is_target && self.targets[d.target].fbp as i32 == gs.main_fbp && Self::wide_picture() {
+            self.narrow_2d(d.first as usize, ty == 6 && d.mode[0] == 0);
+        }
         if d.tex_is_target && ty == 6 && v[1].x != v[0].x && v[1].y != v[0].y {
             let f = d.first as usize;
             let ds = 0.5 * (self.verts[f + 1].s - self.verts[f].s) / (v[1].x - v[0].x);
@@ -1000,6 +1216,53 @@ impl Gpu {
             }
         }
         self.draws.push(d);
+    }
+
+    /// Widescreen outside the menus: the game projects its 3D for the wider picture itself (Port_WideFactor).
+    fn wide_picture() -> bool {
+        crate::host::settings::wide() && !MENU_MODE.load(Ordering::Relaxed)
+    }
+
+    /// Widescreen (the C port's GsGpu_Draw). 2D art is laid out for 4:3 and would come out too wide in a wider
+    /// picture: each 2D piece drawn into the picture is narrowed (to 3/4 at 16:9) about a fixed point: in a fight
+    /// the left edge, the right edge or the middle for the HUD's left panel, right panel and centre parts
+    /// (markers from the HUD code), so the panels sit at the screen's edges; captions on the side they are on;
+    /// any other 2D piece about the middle of the screen. Left alone: full-screen fills and fades (untextured,
+    /// full height) and sprites as wide as the screen (the bands of READY / FIGHT, flashes, speed lines).
+    fn narrow_2d(&mut self, first: usize, untextured_sprite: bool) {
+        let vs = &mut self.verts[first..];
+        let (mut x0, mut x1, mut y0, mut y1) = (vs[0].x, vs[0].x, vs[0].y, vs[0].y);
+        for v in vs.iter() {
+            x0 = x0.min(v.x);
+            x1 = x1.max(v.x);
+            y0 = y0.min(v.y);
+            y1 = y1.max(v.y);
+        }
+        let pivot = if (untextured_sprite && y1 - y0 >= 400.0) || x1 - x0 >= 480.0 {
+            return;
+        } else if self.anchor != 0 {
+            match self.anchor {
+                1 => 0.0,
+                2 => 512.0,
+                4 => {
+                    let cx = (x0 + x1) * 0.5;
+                    if x1 <= 300.0 || cx < 180.0 {
+                        0.0
+                    } else if x0 >= 212.0 || cx > 332.0 {
+                        512.0
+                    } else {
+                        256.0
+                    }
+                }
+                _ => 256.0,
+            }
+        } else {
+            256.0
+        };
+        let narrow = 1333.333 / crate::host::settings::aspect_milli() as f32;
+        for v in vs.iter_mut() {
+            v.x = pivot + (v.x - pivot) * narrow;
+        }
     }
 
     fn depth_max(gs: &Gs, ctx: usize) -> f32 {
@@ -1115,6 +1378,14 @@ impl Gpu {
 
     /// The port's marker register (0x7F): 1 = the outline goes here.
     pub fn native(&mut self, gs: &Gs, effect: i32) {
+        if (0x10..=0x14).contains(&effect) {
+            self.anchor = match effect {
+                0x13 => 0,
+                0x14 => 4,
+                e => e - 0x0F,
+            };
+            return;
+        }
         if effect != 1 || self.draws.len() >= MAX_DRAWS {
             return;
         }
@@ -1307,13 +1578,30 @@ impl Gpu {
             (gl.ClearColor)(0.0, 0.0, 0.0, 1.0);
             (gl.Clear)(gl::COLOR_BUFFER_BIT);
             if let Some(b) = best.filter(|&b| self.targets[b].cleared) {
-                let want = 4.0f32 / 3.0;
-                let (mut w, mut h) = (sw, sh);
-                if sw as f32 > sh as f32 * want {
-                    w = (sh as f32 * want + 0.5) as i32;
-                } else {
-                    h = (sw as f32 / want + 0.5) as i32;
+                // the picture's shape: the chosen one (16:9 by default) in fights and the attract demo; the
+                // menus' pages are composed for 4:3, so they are shown at 4:3 in the middle, over a blurred,
+                // darkened copy of themselves that fills the sides
+                let wide = crate::host::settings::wide();
+                let want = if Self::wide_picture() { crate::host::settings::aspect_milli() as f32 / 1000.0 } else { 4.0 / 3.0 };
+                let fit = |want: f32| {
+                    if sw as f32 > sh as f32 * want {
+                        ((sh as f32 * want + 0.5) as i32, sh)
+                    } else {
+                        (sw, (sw as f32 / want + 0.5) as i32)
+                    }
+                };
+                if wide && !Self::wide_picture() {
+                    let (w, h) = fit(crate::host::settings::aspect_milli() as f32 / 1000.0);
+                    (gl.Viewport)((sw - w) / 2, (sh - h) / 2, w, h);
+                    (gl.Disable)(gl::DEPTH_TEST);
+                    (gl.Disablei)(gl::BLEND, 0);
+                    (gl.ColorMask)(1, 1, 1, 1);
+                    (gl.UseProgram)(self.prog_backdrop);
+                    (gl.BindVertexArray)(self.vao);
+                    self.bind_tex(0, self.targets[b].col, 7);
+                    (gl.DrawArrays)(gl::TRIANGLES, 0, 3);
                 }
+                let (w, h) = fit(want);
                 (gl.Viewport)((sw - w) / 2, (sh - h) / 2, w, h);
                 (gl.Disable)(gl::DEPTH_TEST);
                 (gl.Disablei)(gl::BLEND, 0);
@@ -1323,6 +1611,9 @@ impl Gpu {
                 self.bind_tex(0, self.targets[b].col, 7);
                 (gl.DrawArrays)(gl::TRIANGLES, 0, 3);
                 (gl.BindVertexArray)(0);
+                // the port's screens are drawn for 4:3: in the middle, at the picture's height
+                let (w, h) = fit(4.0 / 3.0);
+                (gl.Viewport)((sw - w) / 2, (sh - h) / 2, w, h);
                 self.draw_overlay();
             }
             self.surface.swap(); // (pacing: at the vertical blank, host::vblank_wait)
@@ -1375,12 +1666,50 @@ impl Gpu {
                 std::process::exit(0);
             }
             let close = matches!(menu.step(inp.buttons, inp.key_down, inp.escape), crate::host::settings::Step::Close);
-            self.surface.set_fullscreen(menu.fullscreen());
             if close || inp.settings {
                 break;
             }
         }
         crate::host::ui::restore(saved);
+    }
+
+    /// The settings of the picture (host/settings.rs, changed on Options > Graphics) applied when they change:
+    /// full screen, the window's size for the resolution, the internal resolution (render targets made again).
+    fn apply_settings(&mut self) {
+        let serial = crate::host::settings::SERIAL.load(Ordering::Relaxed);
+        if self.settings_serial == Some(serial) {
+            return;
+        }
+        let first = self.settings_serial.is_none();
+        self.settings_serial = Some(serial);
+        let st = crate::host::settings::get();
+        self.surface.set_fullscreen(st.fullscreen);
+        let size = (st.resolution, crate::host::settings::aspect_milli());
+        if !st.fullscreen && (first || self.window_for != size) {
+            let w = (st.resolution as f32 * size.1 as f32 / 1000.0 + 0.5) as i32;
+            self.surface.set_window_size(w, st.resolution);
+        }
+        self.window_for = size;
+        if st.textures != self.tex_quality {
+            self.tex_quality = st.textures;
+            self.textures_flush();
+        }
+        let scale = st.scale();
+        if scale != self.scale {
+            // the frame buffers again at the new size (their contents are lost: one frame drawn afresh)
+            for i in 0..self.targets.len() {
+                self.target_drop(i);
+            }
+            self.targets.clear();
+            unsafe {
+                (self.gl.DeleteTextures)(1, &self.date_copy);
+                (self.gl.DeleteTextures)(1, &self.aux_copy);
+            }
+            self.scale = scale;
+            self.copies_create();
+            self.last_tex = None;
+            eprintln!("bt3: internal resolution {scale}x ({} x {})", 512 * scale, 448 * scale);
+        }
     }
 
     /// The end of the frame: the list replayed, the shown buffer presented (and a screenshot when asked).
@@ -1548,6 +1877,7 @@ impl Gpu {
                     params[i * 4..i * 4 + 4].copy_from_slice(&d.mode[i].to_le_bytes());
                     params[16 + i * 4..20 + i * 4].copy_from_slice(&d.misc[i].to_le_bytes());
                     params[32 + i * 4..36 + i * 4].copy_from_slice(&d.rect[i].to_le_bytes());
+                    params[48 + i * 4..52 + i * 4].copy_from_slice(&d.orig[i].to_le_bytes());
                 }
                 if last_params != Some(params) {
                     self.set_params(&params);
@@ -1614,21 +1944,40 @@ impl Gpu {
                     (gl.ReadBuffer)(gl::COLOR_ATTACHMENT0);
                     (gl.ReadPixels)(0, 0, w, h, gl::RGBA, gl::UNSIGNED_BYTE, px.as_mut_ptr() as *mut c_void);
                     (gl.BindFramebuffer)(gl::READ_FRAMEBUFFER, 0);
-                    // to 640 x 448 (the TV picture), nearest
-                    let mut out = vec![0u8; 640 * 448 * 4];
+                    if std::env::var("BT3_SHOT_FULL").is_ok() {
+                        // BT3_SHOT_FULL=1: the render target as it is (internal resolution)
+                        let mut flip = px.clone();
+                        for a in flip.chunks_mut(4) {
+                            a[3] = 255;
+                        }
+                        let _ = std::fs::create_dir_all("shots");
+                        let _ = super::write_png(&format!("shots/full_{:05}.png", self.frame), w as u32, h as u32, &flip);
+                    }
+                    // to 640 x 448 (the TV picture), nearest; wider pictures keep the height (853 x 448 at 16:9),
+                    // the port's screens in the middle 640
+                    let ow = if Self::wide_picture() { (640 * crate::host::settings::aspect_milli() + 666) / 1333 } else { 640 } as usize;
+                    let mut out = vec![0u8; ow * 448 * 4];
                     for y in 0..448usize {
-                        for x in 0..640usize {
-                            let sx = x * w as usize / 640;
+                        for x in 0..ow {
+                            let sx = x * w as usize / ow;
                             let sy = y * s as usize;
                             let o = (sy * w as usize + sx) * 4;
-                            let d = (y * 640 + x) * 4;
+                            let d = (y * ow + x) * 4;
                             out[d..d + 3].copy_from_slice(&px[o..o + 3]);
                             out[d + 3] = 255;
                         }
                     }
-                    crate::host::ui::blend_into(&mut out, 640, 448);
+                    let x0 = (ow - 640) / 2;
+                    let mut mid = vec![0u8; 640 * 448 * 4];
+                    for y in 0..448 {
+                        mid[y * 2560..(y + 1) * 2560].copy_from_slice(&out[(y * ow + x0) * 4..(y * ow + x0 + 640) * 4]);
+                    }
+                    crate::host::ui::blend_into(&mut mid, 640, 448);
+                    for y in 0..448 {
+                        out[(y * ow + x0) * 4..(y * ow + x0 + 640) * 4].copy_from_slice(&mid[y * 2560..(y + 1) * 2560]);
+                    }
                     let _ = std::fs::create_dir_all("shots");
-                    let _ = super::write_png(&format!("shots/gpu_{:05}.png", self.frame), 640, 448, &out);
+                    let _ = super::write_png(&format!("shots/gpu_{:05}.png", self.frame), ow as u32, 448, &out);
                 }
             }
         }
@@ -1643,5 +1992,8 @@ impl Gpu {
         self.draws.clear();
         self.skipped = 0;
         self.frame += 1;
+        // between frames: no recorded draw refers to the render targets or the textures now
+        self.apply_settings();
+        self.texpack_collect();
     }
 }

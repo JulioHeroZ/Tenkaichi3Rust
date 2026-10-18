@@ -15,6 +15,8 @@ pub mod gs;
 pub mod ui;
 pub mod saves;
 pub mod title;
+pub mod options;
+pub mod texpack;
 pub mod settings;
 pub mod movie;
 pub mod mpeg2;
@@ -475,7 +477,16 @@ pub fn sceRead(_c: &mut Ctx, _fd: i32, _b: u32, size: i32) -> i32 { size }
 pub fn sceClose(_c: &mut Ctx, _fd: i32) -> i32 { 0 }
 
 // ------------------------------------------------------------------ PC options of the port
-pub fn Port_WideFactor(_c: &mut Ctx) -> F32 { F32(0x3F80_0000) }
+/// The picture's width over the console's 4:3 width: 4/3 at 16:9. The game's projection, culling and effect
+/// proportions take it (btl_cam, stg_a, eft_*). In the menus it is 1: their pages are composed for 4:3 and are
+/// shown at 4:3 in the middle (gs/gpu.rs MENU_MODE).
+pub fn Port_WideFactor(c: &mut Ctx) -> F32 {
+    if settings::wide() && !c.host.menu_mode {
+        F32((settings::aspect_milli() as f32 * 3.0 / 4000.0).to_bits())
+    } else {
+        F32(0x3F80_0000)
+    }
+}
 pub fn Port_StageBufSize(_c: &mut Ctx) -> i32 { 0 }
 pub fn Port_TestBgm(_c: &mut Ctx) -> i32 { -1 }
 pub fn Port_TestScreen(_c: &mut Ctx) -> i32 { -1 }

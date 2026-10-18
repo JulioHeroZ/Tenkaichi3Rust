@@ -1,7 +1,8 @@
-//! The PC settings: full screen, the internal resolution and the keyboard keys of the controller, kept in
-//! Documents\My Games\Tenkaichi3Rust\settings.ini (BT3_SETTINGS=<file> for another one) and changed in the game with
-//! F1, on a screen drawn over the paused picture (gs/gpu.rs settings_menu). The file is plain text and can be edited
-//! by hand too: `name=value` lines, keys by name (Up, K, RightShift, Keypad8...).
+//! The PC settings, kept in Documents\My Games\Tenkaichi3Rust\settings.ini (BT3_SETTINGS=<file> for another one):
+//! the picture (resolution, aspect ratio, texture quality, full screen), changed on the game's own options screen
+//! (Options > Graphics, host/options.rs), and the keyboard keys of the controller, changed with F1 on a screen of
+//! PC extras drawn over the paused picture (gs/gpu.rs settings_menu). The file is plain text and can be edited by
+//! hand too: `name=value` lines, keys by name (Up, K, RightShift, Keypad8...).
 use super::ui::{self, Canvas};
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -40,19 +41,66 @@ const RESERVED: [u32; 3] = [41, 58, 68];
 #[derive(Clone)]
 pub struct Settings {
     pub fullscreen: bool,
-    /// internal resolution, times the PS2's (1..4); used when the game starts
-    pub scale: i32,
+    /// the resolution's height (720, 1080, 1440, 2160): the window's size and the internal resolution
+    pub resolution: i32,
+    /// texture quality: 0 low (the PS2's), 1 medium, 2 high, 3 ultra (the HD texture packs, host/texpack)
+    pub textures: i32,
+    /// the picture's shape, width / height x 1000 (1333 = 4:3, the console's; 1778 = 16:9, the default)
+    pub aspect: i32,
     /// SDL scancode per action (0: none)
     pub keys: [u32; 20],
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { fullscreen: false, scale: 2, keys: DEFAULT_KEYS }
+        Settings { fullscreen: false, resolution: 1080, textures: 2, aspect: ASPECT_DEFAULT, keys: DEFAULT_KEYS }
     }
 }
 
 static SETTINGS: Mutex<Option<Settings>> = Mutex::new(None);
+
+/// The resolutions offered (height, width at 16:9).
+pub const RESOLUTIONS: [(i32, i32); 4] = [(720, 1280), (1080, 1920), (1440, 2560), (2160, 3840)];
+pub const TEXTURES: [&str; 4] = ["low", "medium", "high", "ultra"];
+
+impl Settings {
+    /// The internal resolution, times the PS2's 512 x 448: the least that reaches the resolution's height
+    /// (2 at 720, 3 at 1080, 4 at 1440, 5 at 2160). BT3_SCALE=n wins.
+    pub fn scale(&self) -> i32 {
+        std::env::var("BT3_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or((self.resolution + 447) / 448).clamp(1, 8)
+    }
+}
+
+/// Changes since the start: the renderer applies the settings again when this moves (gs/gpu.rs).
+pub static SERIAL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// The shapes offered (width / height x 1000) and the default, 16:9.
+pub const ASPECTS: [(i32, &str); 4] = [(1333, "4:3"), (1600, "16:10"), (1778, "16:9"), (2370, "21:9")];
+pub const ASPECT_DEFAULT: i32 = 1778;
+
+/// The picture's shape now (asked every frame by the game and the renderer; follows `set`). BT3_ASPECT=16:9 /
+/// 4:3 / 21:9 wins over the settings file (tests).
+static ASPECT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+pub fn aspect_milli() -> i32 {
+    let a = ASPECT.load(std::sync::atomic::Ordering::Relaxed);
+    if a != 0 {
+        return a;
+    }
+    let env = std::env::var("BT3_ASPECT").ok().and_then(|v| {
+        let (w, h) = v.split_once(':')?;
+        let (w, h): (i32, i32) = (w.trim().parse().ok()?, h.trim().parse().ok()?);
+        (w > 0 && h > 0).then(|| w * 1000 / h)
+    });
+    let a = env.unwrap_or_else(|| get().aspect).clamp(1333, 4000);
+    ASPECT.store(a, std::sync::atomic::Ordering::Relaxed);
+    a
+}
+
+/// More than 4:3.
+pub fn wide() -> bool {
+    aspect_milli() > 1340
+}
 
 fn path() -> PathBuf {
     match std::env::var("BT3_SETTINGS") {
@@ -82,7 +130,14 @@ fn load() -> Settings {
         let (k, v) = (k.trim(), v.trim());
         match k {
             "fullscreen" => st.fullscreen = v == "1" || v.eq_ignore_ascii_case("true"),
-            "scale" => st.scale = v.parse().unwrap_or(2).clamp(1, 4),
+            "resolution" => {
+                let h = v.rsplit(['x', 'X', ' ']).next().and_then(|h| h.trim().parse().ok()).unwrap_or(1080);
+                st.resolution = RESOLUTIONS.iter().map(|r| r.0).min_by_key(|r| (r - h).abs()).unwrap_or(1080);
+            }
+            "textures" => st.textures = TEXTURES.iter().position(|t| t.eq_ignore_ascii_case(v)).unwrap_or(2) as i32,
+            "aspect" => {
+                st.aspect = ASPECTS.iter().find(|a| a.1 == v).map(|a| a.0).unwrap_or_else(|| v.parse().unwrap_or(ASPECT_DEFAULT)).clamp(1333, 4000)
+            }
             _ => {
                 if let Some(a) = k.strip_prefix("key.").and_then(|n| ACTIONS.iter().position(|x| x.0 == n)) {
                     st.keys[a] = if v.is_empty() || v == "-" { 0 } else { scancode(v).unwrap_or(st.keys[a]) };
@@ -95,9 +150,15 @@ fn load() -> Settings {
 
 /// Changes the settings and writes the file.
 pub fn set(st: Settings) {
-    let mut text = String::from("# Tenkaichi3Rust: configurações do PC (também pela tecla F1 no jogo).\n");
+    let mut text = String::from("# Tenkaichi3Rust: configurações do PC (no jogo: Options > Graphics; teclas: F1).\n");
     text += &format!("# tela cheia (0 ou 1)\nfullscreen={}\n", st.fullscreen as u8);
-    text += &format!("# resolução interna: vezes a do PS2, 1 a 4 (vale ao abrir o jogo)\nscale={}\n", st.scale);
+    text += &format!("# resolução: 720, 1080, 1440 ou 2160 (a janela e a resolução interna)\nresolution={}\n", st.resolution);
+    text += &format!("# qualidade das texturas: low (as do PS2), medium, high ou ultra (pacotes HD)\ntextures={}\n", TEXTURES[st.textures.clamp(0, 3) as usize]);
+    let shape = ASPECTS.iter().find(|a| a.0 == st.aspect).map(|a| a.1.to_string()).unwrap_or(st.aspect.to_string());
+    text += &format!("# proporção da imagem: 4:3 (a do PS2), 16:10, 16:9 ou 21:9\naspect={shape}\n");
+    if std::env::var("BT3_ASPECT").is_err() {
+        ASPECT.store(st.aspect.clamp(1333, 4000), std::sync::atomic::Ordering::Relaxed);
+    }
     text += "# teclas do controle (nomes como Up, K, RightShift, Keypad8; - = nenhuma)\n";
     for (i, (name, _)) in ACTIONS.iter().enumerate() {
         text += &format!("key.{name}={}\n", if st.keys[i] == 0 { "-".into() } else { key_name(st.keys[i]) });
@@ -111,6 +172,7 @@ pub fn set(st: Settings) {
         let _ = std::fs::rename(&tmp, &p);
     }
     *SETTINGS.lock().unwrap() = Some(st);
+    SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// SDL scancode names.
@@ -171,16 +233,11 @@ pub struct Menu {
     note: String,
 }
 
-const MAIN: [&str; 4] = ["Tela cheia", "Resolução interna", "Teclas do controle", "Voltar ao jogo"];
+const MAIN: [&str; 2] = ["Teclas do controle", "Voltar ao jogo"];
 
 impl Menu {
     pub fn new() -> Menu {
         Menu { st: get(), page: 0, cursor: 0, waiting: None, last: 0xFFFF, note: String::new() }
-    }
-
-    /// The current settings (full screen is applied by the caller as it changes).
-    pub fn fullscreen(&self) -> bool {
-        self.st.fullscreen
     }
 
     /// One frame: the controller buttons now (PS2 bits), the key pressed this frame (scancode, 0 none), whether
@@ -211,9 +268,7 @@ impl Menu {
             return Step::Stay;
         }
         const UP: u16 = 1 << 4;
-        const RIGHT: u16 = 1 << 5;
         const DOWN: u16 = 1 << 6;
-        const LEFT: u16 = 1 << 7;
         const START: u16 = 1 << 3;
         const CROSS: u16 = 1 << 14;
         const CIRCLE: u16 = 1 << 13;
@@ -226,25 +281,14 @@ impl Menu {
         }
         let ok = pressed & (CROSS | START) != 0 || key == 40;
         let back = escape || pressed & CIRCLE != 0;
-        let side = if pressed & LEFT != 0 { -1 } else if pressed & RIGHT != 0 { 1 } else { 0 };
         if self.page == 0 {
             match self.cursor {
-                0 if ok || side != 0 => {
-                    self.st.fullscreen = !self.st.fullscreen;
-                    set(self.st.clone());
-                }
-                1 if ok || side != 0 => {
-                    let d = if side < 0 { -1 } else { 1 };
-                    self.st.scale = (self.st.scale - 1 + d).rem_euclid(4) + 1;
-                    set(self.st.clone());
-                    self.note = "A resolução nova vale na próxima vez que o jogo abrir.".into();
-                }
-                2 if ok => {
+                0 if ok => {
                     self.page = 1;
                     self.cursor = 0;
                     self.note.clear();
                 }
-                3 if ok => return Step::Close,
+                1 if ok => return Step::Close,
                 _ => {}
             }
             if back {
@@ -261,12 +305,12 @@ impl Menu {
                     self.note = "Teclas padrão de volta.".into();
                 } else {
                     self.page = 0;
-                    self.cursor = 2;
+                    self.cursor = 0;
                     self.note.clear();
                 }
             } else if back {
                 self.page = 0;
-                self.cursor = 2;
+                self.cursor = 0;
                 self.note.clear();
             }
         }
@@ -281,25 +325,16 @@ impl Menu {
         let mut cv = Canvas::new();
         under.copy_into(&mut cv);
         cv.rect(0, 0, ui::W as i32, ui::H as i32, 0, [8, 10, 18, 200]);
-        cv.text_centered(640, 60, "Configurações do PC", 1.2, WHITE);
+        cv.text_centered(640, 60, "Extras do PC", 1.2, WHITE);
         if self.page == 0 {
-            let values = [
-                if self.st.fullscreen { "Sim".to_string() } else { "Não".to_string() },
-                format!("{}x ({} x {})", self.st.scale, 640 * self.st.scale, 448 * self.st.scale),
-                String::new(),
-                String::new(),
-            ];
             for (i, label) in MAIN.iter().enumerate() {
-                let y = 190 + i as i32 * 110;
+                let y = 300 + i as i32 * 110;
                 let sel = i == self.cursor;
                 cv.rect(240, y, 800, 86, 16, if sel { [60, 46, 26, 235] } else { [28, 32, 46, 220] });
                 cv.text(280, y + 24, label, 0.85, if sel { ACCENT } else { WHITE });
-                if !values[i].is_empty() {
-                    let w = cv.text_width(&values[i], 0.8);
-                    cv.text(1000 - w, y + 26, &values[i], 0.8, WHITE);
-                }
             }
-            cv.text_centered(640, 790, "↑ ↓  escolher     ← →  mudar     Enter / ✕  confirmar     Esc / ○  voltar", 0.6, DIM);
+            cv.text_centered(640, 680, "Resolução, proporção, texturas e tela cheia: Options > Graphics, no menu do jogo.", 0.6, DIM);
+            cv.text_centered(640, 790, "↑ ↓  escolher     Enter / ✕  confirmar     Esc / ○  voltar", 0.6, DIM);
         } else {
             // the key list, a page that scrolls with the cursor
             let rows = ACTIONS.len() + 2;

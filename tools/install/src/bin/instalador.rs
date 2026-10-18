@@ -1,5 +1,6 @@
 //! The installer's window (Instalar Tenkaichi 3.exe): the disc image, the kind of installation (play only, or the
-//! developer's editable files), the folder, then a progress bar and what the installation reports. It runs
+//! developer's editable files), the folder, the optional HD texture packs (downloaded from their author's links, or
+//! a .rar / folder the user has: tools/install/texturas.py), then a progress bar and what the installation reports. It runs
 //! tools/install/instalar.py (with the player package's own Python, or the project's .venv) and follows its output.
 //! Plain Win32 (user32, gdi32, comdlg32, shell32, comctl32), no libraries.
 #![cfg_attr(windows, windows_subsystem = "windows")]
@@ -191,6 +192,7 @@ const ES_AUTOVSCROLL: u32 = 0x40;
 const BS_PUSHBUTTON: u32 = 0;
 const BS_DEFPUSHBUTTON: u32 = 1;
 const BS_AUTORADIOBUTTON: u32 = 9;
+const BS_AUTOCHECKBOX: u32 = 3;
 const WM_CREATE: u32 = 0x1;
 const WM_DESTROY: u32 = 0x2;
 const WM_PAINT: u32 = 0xF;
@@ -229,6 +231,8 @@ const ID_DIR_BROWSE: isize = 106;
 const ID_INSTALL: isize = 107;
 const ID_CLOSE: isize = 108;
 const ID_START: isize = 109;
+const ID_TEX: [isize; 2] = [110, 111];
+const ID_TEX_PICK: [isize; 2] = [112, 113];
 const WM_OUTPUT: u32 = WM_APP + 1;
 const WM_FINISHED: u32 = WM_APP + 2;
 
@@ -258,6 +262,10 @@ struct H {
     install: HWND,
     close: HWND,
     start: HWND,
+    /// the texture packs (2x, 4x): check box, "Já tenho..." button, where it comes from
+    tex: [HWND; 2],
+    tex_pick: [HWND; 2],
+    tex_from: [HWND; 2],
     paper: HANDLE,
     navy: HANDLE,
     orange: HANDLE,
@@ -274,12 +282,14 @@ struct State {
     stage: f64,
     done: Option<PathBuf>,
     child: Option<u32>,
+    /// a texture pack the user already has (.rar or folder), instead of the download
+    tex_file: [Option<String>; 2],
 }
 
 static HANDLES: std::sync::OnceLock<H> = std::sync::OnceLock::new();
 static DPI: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(96);
 static MAIN: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
-static STATE: Mutex<State> = Mutex::new(State { running: false, stage: 0.0, done: None, child: None });
+static STATE: Mutex<State> = Mutex::new(State { running: false, stage: 0.0, done: None, child: None, tex_file: [None, None] });
 static OUTPUT: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
 static PAPER_BRUSH: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 
@@ -412,7 +422,7 @@ fn main() {
         DPI.store(dpi, std::sync::atomic::Ordering::Relaxed);
         PAPER_BRUSH.store(paper, std::sync::atomic::Ordering::Relaxed);
         let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-        let mut r = RECT { left: 0, top: 0, right: s(dpi, 680), bottom: s(dpi, 620) };
+        let mut r = RECT { left: 0, top: 0, right: s(dpi, 680), bottom: s(dpi, 732) };
         AdjustWindowRect(&mut r, style, 0);
         let (ww, wh) = (r.right - r.left, r.bottom - r.top);
         let x = (GetSystemMetrics(0) - ww) / 2;
@@ -468,16 +478,28 @@ unsafe fn create(hwnd: HWND) {
     lbl("3.  Pasta de instalação", 324, bold);
     let dir = control(hwnd, "EDIT", &default_dir(), WS_TABSTOP | ES_AUTOHSCROLL, WS_EX_CLIENTEDGE, 24, 348, 520, 26, ID_DIR, font);
     let dir_browse = control(hwnd, "BUTTON", "Procurar...", WS_TABSTOP | BS_PUSHBUTTON, 0, 552, 347, 104, 28, ID_DIR_BROWSE, font);
-    let status = control(hwnd, "STATIC", "Escolha a imagem do disco e clique em Instalar.", st, 0, 24, 392, 632, 20, 0, font);
-    let progress = control(hwnd, "msctls_progress32", "", 0, 0, 24, 416, 632, 18, 0, font);
+    lbl("4.  Texturas HD (opcional)", 388, bold);
+    let mut tex = [0; 2];
+    let mut tex_pick = [0; 2];
+    let mut tex_from = [0; 2];
+    for (i, label) in ["1080p (Alta): 1 GB", "4K (Ultra): 3,4 GB"].iter().enumerate() {
+        let y = 412 + 28 * i as i32;
+        tex[i] = control(hwnd, "BUTTON", label, WS_TABSTOP | BS_AUTOCHECKBOX, 0, 24, y, 220, 22, ID_TEX[i], font);
+        tex_from[i] = control(hwnd, "STATIC", "baixado do Google Drive do autor", st, 0, 250, y + 2, 296, 20, 0, font);
+        tex_pick[i] = control(hwnd, "BUTTON", "Já tenho...", WS_TABSTOP | BS_PUSHBUTTON, 0, 552, y - 2, 104, 26, ID_TEX_PICK[i], font);
+    }
+    control(hwnd, "STATIC", "Remaster das texturas feito pelo canal PLAYANDO (YouTube). Não faz parte deste projeto.",
+            st, 0, 24, 470, 632, 20, 0, font);
+    let status = control(hwnd, "STATIC", "Escolha a imagem do disco e clique em Instalar.", st, 0, 24, 504, 632, 20, 0, font);
+    let progress = control(hwnd, "msctls_progress32", "", 0, 0, 24, 528, 632, 18, 0, font);
     SendMessageW(progress, PBM_SETRANGE32, 0, 1000);
     SendMessageW(progress, PBM_SETBARCOLOR, 0, ORANGE as isize);
     let log = control(hwnd, "EDIT", "", WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL, WS_EX_CLIENTEDGE,
-                      24, 444, 632, 112, 0, mono);
+                      24, 556, 632, 112, 0, mono);
     SendMessageW(log, EM_SETLIMITTEXT, 0, 0);
-    let start = control(hwnd, "BUTTON", "Jogar agora", WS_TABSTOP | BS_PUSHBUTTON, 0, 324, 572, 112, 32, ID_START, font);
-    let install = control(hwnd, "BUTTON", "Instalar", WS_TABSTOP | BS_DEFPUSHBUTTON, 0, 444, 572, 104, 32, ID_INSTALL, bold);
-    let close = control(hwnd, "BUTTON", "Fechar", WS_TABSTOP | BS_PUSHBUTTON, 0, 556, 572, 100, 32, ID_CLOSE, font);
+    let start = control(hwnd, "BUTTON", "Jogar agora", WS_TABSTOP | BS_PUSHBUTTON, 0, 324, 684, 112, 32, ID_START, font);
+    let install = control(hwnd, "BUTTON", "Instalar", WS_TABSTOP | BS_DEFPUSHBUTTON, 0, 444, 684, 104, 32, ID_INSTALL, bold);
+    let close = control(hwnd, "BUTTON", "Fechar", WS_TABSTOP | BS_PUSHBUTTON, 0, 556, 684, 100, 32, ID_CLOSE, font);
     ShowWindow(start, 0);
     SendMessageW(play, BM_SETCHECK, 1, 0);
     let _ = HANDLES.set(H {
@@ -493,6 +515,9 @@ unsafe fn create(hwnd: HWND) {
         install,
         close,
         start,
+        tex,
+        tex_pick,
+        tex_from,
         paper: PAPER_BRUSH.load(std::sync::atomic::Ordering::Relaxed),
         navy: CreateSolidBrush(NAVY),
         orange: CreateSolidBrush(ORANGE),
@@ -564,6 +589,53 @@ unsafe fn pick_iso(hwnd: HWND) {
     if GetOpenFileNameW(&mut o) != 0 {
         let n = file.iter().position(|&c| c == 0).unwrap_or(0);
         set_text(h().iso, &String::from_utf16_lossy(&file[..n]));
+    }
+}
+
+/// "Já tenho...": a texture pack's .rar, or any .dds of a pack already extracted (then its folder).
+unsafe fn pick_tex(hwnd: HWND, i: usize) {
+    let mut file = vec![0u16; 1024];
+    let filter: Vec<u16> = "Pacote de texturas (*.rar; *.dds)\0*.rar;*.dds\0Todos os arquivos\0*.*\0\0".encode_utf16().collect();
+    let title = w(if i == 0 {
+        "Texturas 1080p: escolha o TEXTURAS 1080p.rar (ou um .dds da pasta já extraída)"
+    } else {
+        "Texturas 4K: escolha o TEXTURAS 4K.rar (ou um .dds da pasta já extraída)"
+    });
+    let mut o = OPENFILENAMEW {
+        lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
+        hwndOwner: hwnd,
+        hInstance: 0,
+        lpstrFilter: filter.as_ptr(),
+        lpstrCustomFilter: std::ptr::null_mut(),
+        nMaxCustFilter: 0,
+        nFilterIndex: 1,
+        lpstrFile: file.as_mut_ptr(),
+        nMaxFile: file.len() as u32,
+        lpstrFileTitle: std::ptr::null_mut(),
+        nMaxFileTitle: 0,
+        lpstrInitialDir: std::ptr::null(),
+        lpstrTitle: title.as_ptr(),
+        Flags: 0x1000 | 0x800 | 0x80000,
+        nFileOffset: 0,
+        nFileExtension: 0,
+        lpstrDefExt: std::ptr::null(),
+        lCustData: 0,
+        lpfnHook: std::ptr::null(),
+        lpTemplateName: std::ptr::null(),
+        pvReserved: std::ptr::null_mut(),
+        dwReserved: 0,
+        FlagsEx: 0,
+    };
+    if GetOpenFileNameW(&mut o) != 0 {
+        let n = file.iter().position(|&c| c == 0).unwrap_or(0);
+        let mut p = PathBuf::from(String::from_utf16_lossy(&file[..n]));
+        if p.extension().map_or(false, |e| e.eq_ignore_ascii_case("dds")) {
+            p = p.parent().map(Path::to_path_buf).unwrap_or(p);
+        }
+        let u = h();
+        set_text(u.tex_from[i], &format!("de {}", p.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default()));
+        SendMessageW(u.tex[i], BM_SETCHECK, 1, 0);
+        state(|s| s.tex_file[i] = Some(p.display().to_string()));
     }
 }
 
@@ -676,6 +748,11 @@ fn start_install(hwnd: HWND) {
     let iso = text(u.iso).trim().trim_matches('"').to_string();
     let dir = text(u.dir).trim().trim_matches('"').to_string();
     let dev = is_dev();
+    let files = state(|s| s.tex_file.clone());
+    let textures: Vec<(&str, String)> = (0..2)
+        .filter(|&i| unsafe { SendMessageW(u.tex[i], BM_GETCHECK, 0, 0) == 1 })
+        .map(|i| (["--texturas-2x", "--texturas-4x"][i], files[i].clone().unwrap_or_else(|| "baixar".into())))
+        .collect();
     if !Path::new(&iso).is_file() {
         message(hwnd, "Escolha a imagem do disco (.iso) do Tenkaichi 3.", MB_OK | MB_ICONWARNING);
         return;
@@ -689,7 +766,7 @@ fn start_install(hwnd: HWND) {
         s.stage = 0.0;
     });
     unsafe {
-        for c in [u.iso, u.iso_browse, u.play, u.dev, u.dir, u.dir_browse, u.install] {
+        for c in [u.iso, u.iso_browse, u.play, u.dev, u.dir, u.dir_browse, u.install, u.tex[0], u.tex[1], u.tex_pick[0], u.tex_pick[1]] {
             EnableWindow(c, 0);
         }
         SendMessageW(u.progress, PBM_SETPOS, 0, 0);
@@ -711,6 +788,9 @@ fn start_install(hwnd: HWND) {
             let mut c = Command::new(py);
             c.arg("-u").arg(root.join("tools").join("install").join("instalar.py")).arg(&iso).current_dir(&root);
             c.args(["--modo", if dev { "desenvolvedor" } else { "jogador" }, "--destino", &dir]);
+            for (flag, from) in &textures {
+                c.arg(flag).arg(from);
+            }
             run_logged(&mut c, &push)?;
             Ok(PathBuf::from(&dir).join("Tenkaichi3.exe"))
         })();
@@ -735,9 +815,23 @@ fn progress_of(line: &str, dev: bool) -> Option<(f64, String)> {
             Some("5/6") => stage(780.0, "Recursos de PC e pastas (5 de 6)"),
             Some("6/6") => stage(if dev { 950.0 } else { 870.0 }, "Vídeos (6 de 6)"),
             _ if rest.starts_with("empacot") => stage(900.0, "Empacotando os dados do jogo"),
+            _ if rest.starts_with("texturas HD 1080p") => stage(940.0, "Texturas HD 1080p"),
+            _ if rest.starts_with("texturas HD 4K") => stage(965.0, "Texturas HD 4K"),
             _ if rest.starts_with("compilando") => None,
             _ => None,
         };
+    }
+    // texturas.py: "texturas 1080p: baixando 45% (...)", "texturas 4K: extraindo com 7z.exe"
+    if let Some(rest) = line.strip_prefix("texturas ") {
+        let (label, what) = rest.split_once(": ")?;
+        let (base, span) = if label == "4K" { (965.0, 30.0) } else { (940.0, 24.0) };
+        if let Some(pct) = what.strip_prefix("baixando ").and_then(|w| w.split('%').next()).and_then(|p| p.trim().parse::<f64>().ok()) {
+            return Some((base + span * 0.8 * pct / 100.0, format!("Baixando as texturas HD {label}: {}", what.trim_start_matches("baixando "))));
+        }
+        if what.starts_with("extraindo") {
+            return Some((base + span * 0.8, format!("Extraindo as texturas HD {label}")));
+        }
+        return None;
     }
     // files_extract.py: "<n> files, <m> textures (<s>s)" every 100 files, of about 3400
     if let Some((n, _)) = line.split_once(" files, ") {
@@ -776,6 +870,8 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: usize, lp: isize) -> isize 
                 match (wp & 0xFFFF) as isize {
                     ID_ISO_BROWSE => pick_iso(hwnd),
                     ID_DIR_BROWSE => pick_dir(hwnd),
+                    id if id == ID_TEX_PICK[0] => pick_tex(hwnd, 0),
+                    id if id == ID_TEX_PICK[1] => pick_tex(hwnd, 1),
                     ID_PLAY | ID_DEV => mode_changed(),
                     ID_INSTALL => start_install(hwnd),
                     ID_START => {
@@ -819,7 +915,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: usize, lp: isize) -> isize 
                     ShowWindow(u.start, 1);
                 } else {
                     set_text(u.status, "A instalação parou. Veja o motivo abaixo; ao instalar de novo, os passos prontos são pulados.");
-                    for c in [u.iso, u.iso_browse, u.play, u.dev, u.dir, u.dir_browse, u.install] {
+                    for c in [u.iso, u.iso_browse, u.play, u.dev, u.dir, u.dir_browse, u.install, u.tex[0], u.tex[1], u.tex_pick[0], u.tex_pick[1]] {
                         EnableWindow(c, 1);
                     }
                 }

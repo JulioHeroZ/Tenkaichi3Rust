@@ -195,9 +195,12 @@ def main():
     # the memory card flows, replaced by PC saves (src/host/saves.rs; BT3_MEMCARD=1 runs the game's own)
     for n in ("McFlow_Start", "McFlow_Update", "McFlow_PollCard"):
         WRAP[n] = "crate::host::saves::" + n
-    # the title screen's third item, Load Game (src/host/title.rs)
+    # the title screen's items Load Game and Options (src/host/title.rs)
     for n in ("Title_Init", "Title_Term", "Title_Draw", "Title_Input", "TextBox_DrawClip"):
         WRAP[n] = "crate::host::title::" + n
+    # the options screen's Graphics page (src/host/options.rs)
+    for n in ("Option_Init", "Option_Input", "Option_Term", "Flash_Draw"):
+        WRAP[n] = "crate::host::options::" + n
     # helpers whose C only moves bits through memory, bound to native versions (src/host/native.rs)
     NATIVE = {"vu0_b__f_bits", "vu0_b__f_from"}
     for n in NATIVE:

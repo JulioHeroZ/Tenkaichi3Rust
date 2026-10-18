@@ -126,6 +126,20 @@ impl Surface {
         }
     }
 
+    /// The window's size (not in full screen): `w` x `h`, made smaller (same shape) to fit the display.
+    pub fn set_window_size(&mut self, w: i32, h: i32) {
+        if let Backend::Sdl(s) = &mut self.backend {
+            let mut r = [0i32; 4];
+            let (mut w, mut h) = (w, h);
+            if unsafe { (s.usable)((s.display_of)(s.window), &mut r) } && r[2] > 0 && r[3] > 0 {
+                let k = (r[2] as f32 * 0.95 / w as f32).min(r[3] as f32 * 0.92 / h as f32).min(1.0);
+                w = (w as f32 * k) as i32;
+                h = (h as f32 * k) as i32;
+            }
+            unsafe { (s.set_size)(s.window, w, h) };
+        }
+    }
+
     pub fn has_window(&self) -> bool {
         matches!(self.backend, Backend::Sdl(_))
     }
@@ -178,6 +192,9 @@ pub struct Sdl {
     pad: *mut c_void,
     full: bool,
     set_full: unsafe extern "C" fn(*mut c_void, bool) -> bool,
+    set_size: unsafe extern "C" fn(*mut c_void, i32, i32) -> bool,
+    display_of: unsafe extern "C" fn(*mut c_void) -> u32,
+    usable: unsafe extern "C" fn(u32, *mut [i32; 4]) -> bool,
 }
 
 impl Sdl {
@@ -226,7 +243,10 @@ impl Sdl {
         // BT3_HIDDEN=1: the window is never shown (automatic tests on someone's desktop; the picture still goes to
         // the screenshots, which are taken from the render targets)
         let hidden: u64 = if std::env::var("BT3_HIDDEN").is_ok() { 0x8 } else { 0 };
-        let window = unsafe { create_window(title.as_ptr(), 1280, 960, 0x2 | 0x20 | hidden) };
+        // the window has the picture's shape (host/settings.rs aspect) at a modest size; the chosen resolution is
+        // given to it right after (Gpu::apply_settings, which keeps it inside the display)
+        let ww = (720.0 * crate::host::settings::aspect_milli() as f32 / 1000.0 + 0.5) as i32;
+        let window = unsafe { create_window(title.as_ptr(), ww, 720, 0x2 | 0x20 | hidden) };
         if window.is_null() {
             return Err(format!("SDL_CreateWindow: {}", err()));
         }
@@ -251,6 +271,9 @@ impl Sdl {
             rumble_sent: (0, 0),
             free: load!(lib, "SDL_free", unsafe extern "C" fn(*mut c_void)),
             set_full: load!(lib, "SDL_SetWindowFullscreen", unsafe extern "C" fn(*mut c_void, bool) -> bool),
+            set_size: load!(lib, "SDL_SetWindowSize", unsafe extern "C" fn(*mut c_void, i32, i32) -> bool),
+            display_of: load!(lib, "SDL_GetDisplayForWindow", unsafe extern "C" fn(*mut c_void) -> u32),
+            usable: load!(lib, "SDL_GetDisplayUsableBounds", unsafe extern "C" fn(u32, *mut [i32; 4]) -> bool),
             pad: std::ptr::null_mut(),
             full: false,
         })
