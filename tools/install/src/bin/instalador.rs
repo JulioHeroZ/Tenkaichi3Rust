@@ -1,0 +1,854 @@
+//! The installer's window (Instalar Tenkaichi 3.exe): the disc image, the kind of installation (play only, or the
+//! developer's editable files), the folder, then a progress bar and what the installation reports. It runs
+//! tools/install/instalar.py (with the player package's own Python, or the project's .venv) and follows its output.
+//! Plain Win32 (user32, gdi32, comdlg32, shell32, comctl32), no libraries.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+#![allow(non_snake_case, clippy::upper_case_acronyms)]
+
+use std::collections::VecDeque;
+use std::ffi::c_void;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+type HWND = isize;
+type HANDLE = isize;
+
+#[repr(C)]
+struct WNDCLASSEXW {
+    cbSize: u32,
+    style: u32,
+    lpfnWndProc: extern "system" fn(HWND, u32, usize, isize) -> isize,
+    cbClsExtra: i32,
+    cbWndExtra: i32,
+    hInstance: HANDLE,
+    hIcon: HANDLE,
+    hCursor: HANDLE,
+    hbrBackground: HANDLE,
+    lpszMenuName: *const u16,
+    lpszClassName: *const u16,
+    hIconSm: HANDLE,
+}
+#[repr(C)]
+#[derive(Default)]
+struct POINT {
+    x: i32,
+    y: i32,
+}
+#[repr(C)]
+#[derive(Default)]
+struct RECT {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+#[repr(C)]
+#[derive(Default)]
+struct MSG {
+    hwnd: HWND,
+    message: u32,
+    wParam: usize,
+    lParam: isize,
+    time: u32,
+    pt: POINT,
+    lPrivate: u32,
+}
+#[repr(C)]
+struct PAINTSTRUCT {
+    hdc: HANDLE,
+    fErase: i32,
+    rcPaint: RECT,
+    fRestore: i32,
+    fIncUpdate: i32,
+    rgbReserved: [u8; 32],
+}
+#[repr(C)]
+struct OPENFILENAMEW {
+    lStructSize: u32,
+    hwndOwner: HWND,
+    hInstance: HANDLE,
+    lpstrFilter: *const u16,
+    lpstrCustomFilter: *mut u16,
+    nMaxCustFilter: u32,
+    nFilterIndex: u32,
+    lpstrFile: *mut u16,
+    nMaxFile: u32,
+    lpstrFileTitle: *mut u16,
+    nMaxFileTitle: u32,
+    lpstrInitialDir: *const u16,
+    lpstrTitle: *const u16,
+    Flags: u32,
+    nFileOffset: u16,
+    nFileExtension: u16,
+    lpstrDefExt: *const u16,
+    lCustData: isize,
+    lpfnHook: *const c_void,
+    lpTemplateName: *const u16,
+    pvReserved: *mut c_void,
+    dwReserved: u32,
+    FlagsEx: u32,
+}
+#[repr(C)]
+struct BROWSEINFOW {
+    hwndOwner: HWND,
+    pidlRoot: *const c_void,
+    pszDisplayName: *mut u16,
+    lpszTitle: *const u16,
+    ulFlags: u32,
+    lpfn: *const c_void,
+    lParam: isize,
+    iImage: i32,
+}
+#[repr(C)]
+struct INITCOMMONCONTROLSEX {
+    dwSize: u32,
+    dwICC: u32,
+}
+
+#[cfg_attr(windows, link(name = "user32"))]
+extern "system" {
+    fn RegisterClassExW(c: *const WNDCLASSEXW) -> u16;
+    fn CreateWindowExW(ex: u32, class: *const u16, title: *const u16, style: u32, x: i32, y: i32, w: i32, h: i32,
+                       parent: HWND, menu: isize, inst: HANDLE, param: *const c_void) -> HWND;
+    fn DefWindowProcW(h: HWND, m: u32, w: usize, l: isize) -> isize;
+    fn GetMessageW(m: *mut MSG, h: HWND, min: u32, max: u32) -> i32;
+    fn TranslateMessage(m: *const MSG) -> i32;
+    fn DispatchMessageW(m: *const MSG) -> isize;
+    fn IsDialogMessageW(h: HWND, m: *const MSG) -> i32;
+    fn PostQuitMessage(code: i32);
+    fn PostMessageW(h: HWND, m: u32, w: usize, l: isize) -> i32;
+    fn SendMessageW(h: HWND, m: u32, w: usize, l: isize) -> isize;
+    fn ShowWindow(h: HWND, cmd: i32) -> i32;
+    fn UpdateWindow(h: HWND) -> i32;
+    fn EnableWindow(h: HWND, on: i32) -> i32;
+    fn SetWindowTextW(h: HWND, t: *const u16) -> i32;
+    fn GetWindowTextW(h: HWND, t: *mut u16, n: i32) -> i32;
+    fn GetWindowTextLengthW(h: HWND) -> i32;
+    fn LoadCursorW(inst: HANDLE, name: usize) -> HANDLE;
+    fn LoadIconW(inst: HANDLE, name: usize) -> HANDLE;
+    fn MessageBoxW(h: HWND, text: *const u16, caption: *const u16, kind: u32) -> i32;
+    fn BeginPaint(h: HWND, ps: *mut PAINTSTRUCT) -> HANDLE;
+    fn EndPaint(h: HWND, ps: *const PAINTSTRUCT) -> i32;
+    fn FillRect(dc: HANDLE, r: *const RECT, brush: HANDLE) -> i32;
+    fn DrawTextW(dc: HANDLE, t: *const u16, n: i32, r: *mut RECT, fmt: u32) -> i32;
+    fn GetClientRect(h: HWND, r: *mut RECT) -> i32;
+    fn GetSystemMetrics(i: i32) -> i32;
+    fn SetProcessDPIAware() -> i32;
+    fn GetDC(h: HWND) -> HANDLE;
+    fn ReleaseDC(h: HWND, dc: HANDLE) -> i32;
+    fn AdjustWindowRect(r: *mut RECT, style: u32, menu: i32) -> i32;
+}
+#[cfg_attr(windows, link(name = "gdi32"))]
+extern "system" {
+    fn CreateFontW(h: i32, w: i32, esc: i32, orient: i32, weight: i32, italic: u32, underline: u32, strike: u32,
+                   charset: u32, out: u32, clip: u32, quality: u32, pitch: u32, face: *const u16) -> HANDLE;
+    fn CreateSolidBrush(c: u32) -> HANDLE;
+    fn SetTextColor(dc: HANDLE, c: u32) -> u32;
+    fn SetBkMode(dc: HANDLE, mode: i32) -> i32;
+    fn SetBkColor(dc: HANDLE, c: u32) -> u32;
+    fn SelectObject(dc: HANDLE, o: HANDLE) -> HANDLE;
+    fn GetDeviceCaps(dc: HANDLE, i: i32) -> i32;
+}
+#[cfg_attr(windows, link(name = "comdlg32"))]
+extern "system" {
+    fn GetOpenFileNameW(o: *mut OPENFILENAMEW) -> i32;
+}
+#[cfg_attr(windows, link(name = "shell32"))]
+extern "system" {
+    fn SHBrowseForFolderW(b: *const BROWSEINFOW) -> *mut c_void;
+    fn SHGetPathFromIDListW(pidl: *const c_void, path: *mut u16) -> i32;
+    fn ShellExecuteW(h: HWND, op: *const u16, file: *const u16, params: *const u16, dir: *const u16, show: i32) -> HANDLE;
+    fn IsUserAnAdmin() -> i32;
+}
+#[cfg_attr(windows, link(name = "ole32"))]
+extern "system" {
+    fn CoInitializeEx(r: *const c_void, flags: u32) -> i32;
+    fn CoTaskMemFree(p: *mut c_void);
+}
+#[cfg_attr(windows, link(name = "comctl32"))]
+extern "system" {
+    fn InitCommonControlsEx(i: *const INITCOMMONCONTROLSEX) -> i32;
+}
+#[cfg_attr(windows, link(name = "kernel32"))]
+extern "system" {
+    fn GetModuleHandleW(name: *const u16) -> HANDLE;
+}
+
+const WS_OVERLAPPED: u32 = 0;
+const WS_CAPTION: u32 = 0x00C00000;
+const WS_SYSMENU: u32 = 0x00080000;
+const WS_MINIMIZEBOX: u32 = 0x00020000;
+const WS_CHILD: u32 = 0x40000000;
+const WS_VISIBLE: u32 = 0x10000000;
+const WS_TABSTOP: u32 = 0x00010000;
+const WS_GROUP: u32 = 0x00020000;
+const WS_VSCROLL: u32 = 0x00200000;
+const WS_EX_CLIENTEDGE: u32 = 0x200;
+const ES_AUTOHSCROLL: u32 = 0x80;
+const ES_MULTILINE: u32 = 0x4;
+const ES_READONLY: u32 = 0x800;
+const ES_AUTOVSCROLL: u32 = 0x40;
+const BS_PUSHBUTTON: u32 = 0;
+const BS_DEFPUSHBUTTON: u32 = 1;
+const BS_AUTORADIOBUTTON: u32 = 9;
+const WM_CREATE: u32 = 0x1;
+const WM_DESTROY: u32 = 0x2;
+const WM_PAINT: u32 = 0xF;
+const WM_CLOSE: u32 = 0x10;
+const WM_SETFONT: u32 = 0x30;
+const WM_COMMAND: u32 = 0x111;
+const WM_CTLCOLOREDIT: u32 = 0x133;
+const WM_CTLCOLORBTN: u32 = 0x135;
+const WM_CTLCOLORSTATIC: u32 = 0x138;
+const WM_APP: u32 = 0x8000;
+const BM_GETCHECK: u32 = 0xF0;
+const BM_SETCHECK: u32 = 0xF1;
+const EM_SETSEL: u32 = 0xB1;
+const EM_REPLACESEL: u32 = 0xC2;
+const EM_SETLIMITTEXT: u32 = 0xC5;
+const PBM_SETRANGE32: u32 = 0x406;
+const PBM_SETPOS: u32 = 0x402;
+const PBM_SETBARCOLOR: u32 = 0x409;
+const MB_OK: u32 = 0;
+const MB_YESNO: u32 = 4;
+const MB_ICONWARNING: u32 = 0x30;
+const MB_ICONINFO: u32 = 0x40;
+const IDYES: i32 = 6;
+const DT_LEFT: u32 = 0;
+const DT_SINGLELINE: u32 = 0x20;
+const DT_VCENTER: u32 = 0x4;
+const DT_WORDBREAK: u32 = 0x10;
+
+// controls
+const ID_ISO: isize = 101;
+const ID_ISO_BROWSE: isize = 102;
+const ID_PLAY: isize = 103;
+const ID_DEV: isize = 104;
+const ID_DIR: isize = 105;
+const ID_DIR_BROWSE: isize = 106;
+const ID_INSTALL: isize = 107;
+const ID_CLOSE: isize = 108;
+const ID_START: isize = 109;
+const WM_OUTPUT: u32 = WM_APP + 1;
+const WM_FINISHED: u32 = WM_APP + 2;
+
+// colours (0x00BBGGRR)
+const NAVY: u32 = 0x004A2A1D;
+const ORANGE: u32 = 0x00218CF5;
+const WHITE: u32 = 0x00FFFFFF;
+const PAPER: u32 = 0x00F7F5F3;
+
+fn w(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(Some(0)).collect()
+}
+
+/// The window's controls and drawing things, set once when it is created (read without locks: Win32 calls made
+/// while a lock is held could re-enter the window procedure).
+#[derive(Clone, Copy, Default)]
+struct H {
+    iso: HWND,
+    iso_browse: HWND,
+    play: HWND,
+    dev: HWND,
+    dir: HWND,
+    dir_browse: HWND,
+    status: HWND,
+    progress: HWND,
+    log: HWND,
+    install: HWND,
+    close: HWND,
+    start: HWND,
+    paper: HANDLE,
+    navy: HANDLE,
+    orange: HANDLE,
+    white: HANDLE,
+    font: HANDLE,
+    title: HANDLE,
+    dpi: i32,
+}
+
+/// What changes while the installation runs.
+#[derive(Default)]
+struct State {
+    running: bool,
+    stage: f64,
+    done: Option<PathBuf>,
+    child: Option<u32>,
+}
+
+static HANDLES: std::sync::OnceLock<H> = std::sync::OnceLock::new();
+static DPI: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(96);
+static MAIN: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+static STATE: Mutex<State> = Mutex::new(State { running: false, stage: 0.0, done: None, child: None });
+static OUTPUT: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
+static PAPER_BRUSH: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
+fn h() -> H {
+    HANDLES.get().copied().unwrap_or_default()
+}
+
+fn state<R>(f: impl FnOnce(&mut State) -> R) -> R {
+    f(&mut STATE.lock().unwrap())
+}
+
+static ADMIN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The folder with tools/install/instalar.py: where this installer unpacks what it carries (Python, the tools, the
+/// game's program; bt3_install::payload), or, run from the project, the first folder above the program with it.
+fn root() -> PathBuf {
+    if let Some(dir) = unpack_dir() {
+        return dir;
+    }
+    let exe = std::env::current_exe().unwrap_or_default();
+    let mut d = exe.parent().map(Path::to_path_buf);
+    while let Some(p) = d {
+        if p.join("tools").join("install").join("instalar.py").is_file() {
+            return p;
+        }
+        d = p.parent().map(Path::to_path_buf);
+    }
+    std::env::current_dir().unwrap_or_default()
+}
+
+/// %TEMP%\Tenkaichi3-Instalador when this program carries its payload.
+fn unpack_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let mut f = std::fs::File::open(&exe).ok()?;
+    use std::io::{Read, Seek, SeekFrom};
+    let mut tail = [0u8; 8];
+    f.seek(SeekFrom::End(-8)).ok()?;
+    f.read_exact(&mut tail).ok()?;
+    (&tail == b"BT3SFX1\0").then(|| std::env::temp_dir().join("Tenkaichi3-Instalador"))
+}
+
+/// Unpacks the payload (once per version of the installer); the folder.
+fn unpack(log: &dyn Fn(&str)) -> Result<Option<PathBuf>, String> {
+    let Some(dir) = unpack_dir() else { return Ok(None) };
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let stamp = std::fs::metadata(&exe).map(|m| format!("{} {:?}", m.len(), m.modified().ok())).unwrap_or_default();
+    let mark = dir.join(".pronto");
+    if std::fs::read_to_string(&mark).ok().as_deref() == Some(stamp.as_str()) {
+        return Ok(Some(dir));
+    }
+    log("Preparando os arquivos do instalador...");
+    let _ = std::fs::remove_dir_all(&dir);
+    let bytes = std::fs::read(&exe).map_err(|e| e.to_string())?;
+    let n = bt3_install::extract(&bytes, &dir, &mut |_, _| {})?;
+    std::fs::write(&mark, stamp).map_err(|e| e.to_string())?;
+    log(&format!("{n} arquivos do instalador prontos."));
+    Ok(Some(dir))
+}
+
+/// Program Files (x86)\Tenkaichi 3, as a PC game; the user's own programs folder when not run as administrator.
+fn default_dir() -> String {
+    let admin = ADMIN.load(std::sync::atomic::Ordering::Relaxed);
+    let base = if admin {
+        std::env::var("ProgramFiles(x86)").or_else(|_| std::env::var("ProgramFiles")).map(PathBuf::from).ok()
+    } else {
+        std::env::var("LOCALAPPDATA").map(|l| PathBuf::from(l).join("Programs")).ok()
+    };
+    base.unwrap_or_else(|| PathBuf::from("C:\\")).join("Tenkaichi 3").display().to_string()
+}
+
+fn text(h: HWND) -> String {
+    unsafe {
+        let n = GetWindowTextLengthW(h);
+        let mut b = vec![0u16; n as usize + 1];
+        let got = GetWindowTextW(h, b.as_mut_ptr(), n + 1);
+        String::from_utf16_lossy(&b[..got.max(0) as usize])
+    }
+}
+
+fn set_text(h: HWND, s: &str) {
+    unsafe { SetWindowTextW(h, w(s).as_ptr()) };
+}
+
+fn append_log(h: HWND, s: &str) {
+    let mut line = s.replace('\n', "\r\n");
+    line.push_str("\r\n");
+    unsafe {
+        SendMessageW(h, EM_SETSEL, usize::MAX >> 1, (usize::MAX >> 1) as isize);
+        SendMessageW(h, EM_REPLACESEL, 0, w(&line).as_ptr() as isize);
+    }
+}
+
+fn main() {
+    unsafe {
+        // an installer into Program Files asks for the administrator once, as games' installers do
+        if IsUserAnAdmin() == 0 && !std::env::args().any(|a| a == "--elevado") {
+            let exe = std::env::current_exe().unwrap_or_default();
+            let r = ShellExecuteW(0, w("runas").as_ptr(), w(&exe.display().to_string()).as_ptr(), w("--elevado").as_ptr(),
+                                  std::ptr::null(), 1);
+            if r > 32 {
+                return; // the administrator's copy goes on
+            }
+        }
+        ADMIN.store(IsUserAnAdmin() != 0, std::sync::atomic::Ordering::Relaxed);
+        SetProcessDPIAware();
+        CoInitializeEx(std::ptr::null(), 0x2); // apartment threaded, for the folder dialog
+        let icc = INITCOMMONCONTROLSEX { dwSize: 8, dwICC: 0x20 }; // ICC_PROGRESS_CLASS
+        InitCommonControlsEx(&icc);
+        let inst = GetModuleHandleW(std::ptr::null());
+        let class = w("Tenkaichi3Instalador");
+        let paper = CreateSolidBrush(PAPER);
+        let wc = WNDCLASSEXW {
+            cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+            style: 0,
+            lpfnWndProc: wndproc,
+            cbClsExtra: 0,
+            cbWndExtra: 0,
+            hInstance: inst,
+            hIcon: LoadIconW(0, 32512),
+            hCursor: LoadCursorW(0, 32512),
+            hbrBackground: paper,
+            lpszMenuName: std::ptr::null(),
+            lpszClassName: class.as_ptr(),
+            hIconSm: 0,
+        };
+        RegisterClassExW(&wc);
+        let dc = GetDC(0);
+        let dpi = GetDeviceCaps(dc, 88).max(96); // LOGPIXELSX
+        ReleaseDC(0, dc);
+        DPI.store(dpi, std::sync::atomic::Ordering::Relaxed);
+        PAPER_BRUSH.store(paper, std::sync::atomic::Ordering::Relaxed);
+        let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+        let mut r = RECT { left: 0, top: 0, right: s(dpi, 680), bottom: s(dpi, 620) };
+        AdjustWindowRect(&mut r, style, 0);
+        let (ww, wh) = (r.right - r.left, r.bottom - r.top);
+        let x = (GetSystemMetrics(0) - ww) / 2;
+        let y = (GetSystemMetrics(1) - wh) / 2;
+        let hwnd = CreateWindowExW(0, class.as_ptr(), w("Instalar Tenkaichi 3").as_ptr(), style, x, y, ww, wh, 0, 0, inst,
+                                   std::ptr::null());
+        ShowWindow(hwnd, 1);
+        UpdateWindow(hwnd);
+        let mut msg = MSG::default();
+        while GetMessageW(&mut msg, 0, 0, 0) > 0 {
+            if IsDialogMessageW(hwnd, &msg) == 0 {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+    }
+}
+
+fn s(dpi: i32, v: i32) -> i32 {
+    v * dpi / 96
+}
+
+unsafe fn control(parent: HWND, class: &str, label: &str, style: u32, ex: u32, x: i32, y: i32, cw: i32, ch: i32,
+                  id: isize, font: HANDLE) -> HWND {
+    let dpi = DPI.load(std::sync::atomic::Ordering::Relaxed);
+    let h = CreateWindowExW(ex, w(class).as_ptr(), w(label).as_ptr(), WS_CHILD | WS_VISIBLE | style, s(dpi, x), s(dpi, y),
+                            s(dpi, cw), s(dpi, ch), parent, id, GetModuleHandleW(std::ptr::null()), std::ptr::null());
+    SendMessageW(h, WM_SETFONT, font as usize, 1);
+    h
+}
+
+unsafe fn create(hwnd: HWND) {
+    let dpi = DPI.load(std::sync::atomic::Ordering::Relaxed);
+    let face = w("Segoe UI");
+    let font = CreateFontW(-s(dpi, 15), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, face.as_ptr());
+    let bold = CreateFontW(-s(dpi, 15), 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, face.as_ptr());
+    let title = CreateFontW(-s(dpi, 26), 0, 0, 0, 700, 0, 0, 0, 1, 0, 0, 5, 0, face.as_ptr());
+    let mono = CreateFontW(-s(dpi, 13), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, w("Consolas").as_ptr());
+    let st = 0; // SS_LEFT
+    let lbl = |t: &str, y: i32, f: HANDLE| control(hwnd, "STATIC", t, st, 0, 24, y, 632, 20, 0, f);
+    lbl("1.  Imagem do disco", 104, bold);
+    let iso = control(hwnd, "EDIT", "", WS_TABSTOP | ES_AUTOHSCROLL, WS_EX_CLIENTEDGE, 24, 128, 520, 26, ID_ISO, font);
+    let iso_browse = control(hwnd, "BUTTON", "Procurar...", WS_TABSTOP | BS_PUSHBUTTON, 0, 552, 127, 104, 28, ID_ISO_BROWSE, font);
+    control(hwnd, "STATIC", "A sua cópia de Dragon Ball Z Budokai Tenkaichi 3 (EUA, SLUS-21678), em .iso.", st, 0, 24, 158, 632, 20, 0, font);
+    lbl("2.  Tipo de instalação", 194, bold);
+    let play = control(hwnd, "BUTTON", "Jogar", WS_TABSTOP | WS_GROUP | BS_AUTORADIOBUTTON, 0, 24, 218, 632, 22, ID_PLAY, bold);
+    control(hwnd, "STATIC", "O jogo pronto para jogar: Tenkaichi3.exe com os dados em pacotes, como um jogo de PC.",
+            st, 0, 44, 240, 612, 20, 0, font);
+    let dev = control(hwnd, "BUTTON", "Desenvolvedor", WS_TABSTOP | BS_AUTORADIOBUTTON, 0, 24, 266, 632, 22, ID_DEV, bold);
+    control(hwnd, "STATIC",
+            "O mesmo jogo, com todos os arquivos editáveis (PNG, glTF, WAV, JSON) por tipo e nome, para mods.",
+            st, 0, 44, 288, 612, 20, 0, font);
+    lbl("3.  Pasta de instalação", 324, bold);
+    let dir = control(hwnd, "EDIT", &default_dir(), WS_TABSTOP | ES_AUTOHSCROLL, WS_EX_CLIENTEDGE, 24, 348, 520, 26, ID_DIR, font);
+    let dir_browse = control(hwnd, "BUTTON", "Procurar...", WS_TABSTOP | BS_PUSHBUTTON, 0, 552, 347, 104, 28, ID_DIR_BROWSE, font);
+    let status = control(hwnd, "STATIC", "Escolha a imagem do disco e clique em Instalar.", st, 0, 24, 392, 632, 20, 0, font);
+    let progress = control(hwnd, "msctls_progress32", "", 0, 0, 24, 416, 632, 18, 0, font);
+    SendMessageW(progress, PBM_SETRANGE32, 0, 1000);
+    SendMessageW(progress, PBM_SETBARCOLOR, 0, ORANGE as isize);
+    let log = control(hwnd, "EDIT", "", WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL, WS_EX_CLIENTEDGE,
+                      24, 444, 632, 112, 0, mono);
+    SendMessageW(log, EM_SETLIMITTEXT, 0, 0);
+    let start = control(hwnd, "BUTTON", "Jogar agora", WS_TABSTOP | BS_PUSHBUTTON, 0, 324, 572, 112, 32, ID_START, font);
+    let install = control(hwnd, "BUTTON", "Instalar", WS_TABSTOP | BS_DEFPUSHBUTTON, 0, 444, 572, 104, 32, ID_INSTALL, bold);
+    let close = control(hwnd, "BUTTON", "Fechar", WS_TABSTOP | BS_PUSHBUTTON, 0, 556, 572, 100, 32, ID_CLOSE, font);
+    ShowWindow(start, 0);
+    SendMessageW(play, BM_SETCHECK, 1, 0);
+    let _ = HANDLES.set(H {
+        iso,
+        iso_browse,
+        play,
+        dev,
+        dir,
+        dir_browse,
+        status,
+        progress,
+        log,
+        install,
+        close,
+        start,
+        paper: PAPER_BRUSH.load(std::sync::atomic::Ordering::Relaxed),
+        navy: CreateSolidBrush(NAVY),
+        orange: CreateSolidBrush(ORANGE),
+        white: CreateSolidBrush(WHITE),
+        font,
+        title,
+        dpi,
+    });
+    let _ = (bold, mono);
+}
+
+unsafe fn paint(hwnd: HWND) {
+    let mut ps = PAINTSTRUCT { hdc: 0, fErase: 0, rcPaint: RECT::default(), fRestore: 0, fIncUpdate: 0, rgbReserved: [0; 32] };
+    let dc = BeginPaint(hwnd, &mut ps);
+    let H { dpi, navy, orange, title, font, .. } = h();
+    let mut r = RECT::default();
+    GetClientRect(hwnd, &mut r);
+    let band = RECT { left: 0, top: 0, right: r.right, bottom: s(dpi, 84) };
+    FillRect(dc, &band, navy);
+    let stripe = RECT { left: 0, top: s(dpi, 84), right: r.right, bottom: s(dpi, 89) };
+    FillRect(dc, &stripe, orange);
+    SetBkMode(dc, 1); // transparent
+    SetTextColor(dc, WHITE);
+    SelectObject(dc, title);
+    let t = w("Dragon Ball Z Budokai Tenkaichi 3");
+    let mut tr = RECT { left: s(dpi, 24), top: s(dpi, 14), right: r.right - s(dpi, 24), bottom: s(dpi, 50) };
+    DrawTextW(dc, t.as_ptr(), -1, &mut tr, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+    SetTextColor(dc, 0x00D8C8B8);
+    SelectObject(dc, font);
+    let sub = w("Instalação para PC, a partir da sua imagem do disco");
+    let mut sr = RECT { left: s(dpi, 24), top: s(dpi, 50), right: r.right - s(dpi, 24), bottom: s(dpi, 76) };
+    DrawTextW(dc, sub.as_ptr(), -1, &mut sr, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_WORDBREAK);
+    EndPaint(hwnd, &ps);
+}
+
+fn is_dev() -> bool {
+    unsafe { SendMessageW(h().dev, BM_GETCHECK, 0, 0) == 1 }
+}
+
+unsafe fn pick_iso(hwnd: HWND) {
+    let mut file = vec![0u16; 1024];
+    let filter: Vec<u16> = "Imagem de disco (*.iso)\0*.iso\0Todos os arquivos\0*.*\0\0".encode_utf16().collect();
+    let title = w("Escolha a imagem do disco do Tenkaichi 3");
+    let mut o = OPENFILENAMEW {
+        lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
+        hwndOwner: hwnd,
+        hInstance: 0,
+        lpstrFilter: filter.as_ptr(),
+        lpstrCustomFilter: std::ptr::null_mut(),
+        nMaxCustFilter: 0,
+        nFilterIndex: 1,
+        lpstrFile: file.as_mut_ptr(),
+        nMaxFile: file.len() as u32,
+        lpstrFileTitle: std::ptr::null_mut(),
+        nMaxFileTitle: 0,
+        lpstrInitialDir: std::ptr::null(),
+        lpstrTitle: title.as_ptr(),
+        Flags: 0x1000 | 0x800 | 0x80000, // OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER
+        nFileOffset: 0,
+        nFileExtension: 0,
+        lpstrDefExt: std::ptr::null(),
+        lCustData: 0,
+        lpfnHook: std::ptr::null(),
+        lpTemplateName: std::ptr::null(),
+        pvReserved: std::ptr::null_mut(),
+        dwReserved: 0,
+        FlagsEx: 0,
+    };
+    if GetOpenFileNameW(&mut o) != 0 {
+        let n = file.iter().position(|&c| c == 0).unwrap_or(0);
+        set_text(h().iso, &String::from_utf16_lossy(&file[..n]));
+    }
+}
+
+unsafe fn pick_dir(hwnd: HWND) {
+    let mut name = vec![0u16; 260];
+    let title = w("Escolha a pasta onde o jogo vai ficar");
+    let b = BROWSEINFOW {
+        hwndOwner: hwnd,
+        pidlRoot: std::ptr::null(),
+        pszDisplayName: name.as_mut_ptr(),
+        lpszTitle: title.as_ptr(),
+        ulFlags: 0x1 | 0x40, // BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE
+        lpfn: std::ptr::null(),
+        lParam: 0,
+        iImage: 0,
+    };
+    let pidl = SHBrowseForFolderW(&b);
+    if !pidl.is_null() {
+        let mut path = vec![0u16; 1024];
+        if SHGetPathFromIDListW(pidl, path.as_mut_ptr()) != 0 {
+            let n = path.iter().position(|&c| c == 0).unwrap_or(0);
+            let mut p = PathBuf::from(String::from_utf16_lossy(&path[..n]));
+            if p.file_name().map(|f| f != "Tenkaichi3").unwrap_or(true) {
+                p = p.join("Tenkaichi3");
+            }
+            set_text(h().dir, &p.display().to_string());
+        }
+        CoTaskMemFree(pidl);
+    }
+}
+
+fn mode_changed() {}
+
+fn message(hwnd: HWND, text: &str, kind: u32) -> i32 {
+    unsafe { MessageBoxW(hwnd, w(text).as_ptr(), w("Instalar Tenkaichi 3").as_ptr(), kind) }
+}
+
+/// The Python that runs the installation: the player package's own, or the project's .venv (made when missing).
+fn python(root: &Path, log: &dyn Fn(&str)) -> Result<PathBuf, String> {
+    let packaged = root.join("python").join("python.exe");
+    if packaged.is_file() {
+        return Ok(packaged);
+    }
+    let venv = root.join(".venv").join("Scripts").join("python.exe");
+    if !venv.is_file() {
+        log("Criando o ambiente Python do projeto (.venv)...");
+        let made = run_logged(Command::new("py").args(["-3", "-m", "venv"]).arg(root.join(".venv")), log)
+            .or_else(|_| run_logged(Command::new("python").args(["-m", "venv"]).arg(root.join(".venv")), log));
+        if made.is_err() || !venv.is_file() {
+            return Err("Não achei o Python 3. Instale em https://www.python.org e tente de novo.".into());
+        }
+    }
+    run_logged(Command::new(&venv).args(["-m", "pip", "install", "--quiet", "numpy"]), log)?;
+    Ok(venv)
+}
+
+use std::process::{Command, Stdio};
+
+fn hide(c: &mut Command) -> &mut Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    c
+}
+
+/// Runs a command, each line of its output to `log`; Ok when it ends well.
+fn run_logged(c: &mut Command, log: &dyn Fn(&str)) -> Result<(), String> {
+    use std::io::{BufRead, BufReader};
+    let mut child = hide(c)
+        .env("PYTHONIOENCODING", "utf-8")
+        .env("PYTHONUNBUFFERED", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    state(|s| s.child = Some(child.id()));
+    let err = child.stderr.take().unwrap();
+    let errors = std::thread::spawn(move || {
+        let mut v = Vec::new();
+        for line in BufReader::new(err).split(b'\n').map_while(Result::ok) {
+            let l = String::from_utf8_lossy(&line).trim_end().to_string();
+            push(&l);
+            v.push(l);
+        }
+        v
+    });
+    for line in BufReader::new(child.stdout.take().unwrap()).split(b'\n').map_while(Result::ok) {
+        log(String::from_utf8_lossy(&line).trim_end());
+    }
+    let status = child.wait().map_err(|e| e.to_string())?;
+    let errors = errors.join().unwrap_or_default();
+    state(|s| s.child = None);
+    if status.success() {
+        Ok(())
+    } else {
+        Err(errors.into_iter().rev().find(|l| !l.is_empty()).unwrap_or_else(|| format!("terminou com {status}")))
+    }
+}
+
+fn push(line: &str) {
+    OUTPUT.lock().unwrap().push_back(line.to_string());
+    unsafe { PostMessageW(MAIN.load(std::sync::atomic::Ordering::Relaxed), WM_OUTPUT, 0, 0) };
+}
+
+fn start_install(hwnd: HWND) {
+    let u = h();
+    let iso = text(u.iso).trim().trim_matches('"').to_string();
+    let dir = text(u.dir).trim().trim_matches('"').to_string();
+    let dev = is_dev();
+    if !Path::new(&iso).is_file() {
+        message(hwnd, "Escolha a imagem do disco (.iso) do Tenkaichi 3.", MB_OK | MB_ICONWARNING);
+        return;
+    }
+    if dir.is_empty() {
+        message(hwnd, "Escolha a pasta de instalação.", MB_OK | MB_ICONWARNING);
+        return;
+    }
+    state(|s| {
+        s.running = true;
+        s.stage = 0.0;
+    });
+    unsafe {
+        for c in [u.iso, u.iso_browse, u.play, u.dev, u.dir, u.dir_browse, u.install] {
+            EnableWindow(c, 0);
+        }
+        SendMessageW(u.progress, PBM_SETPOS, 0, 0);
+    }
+    set_text(u.close, "Cancelar");
+    set_text(u.status, "Preparando...");
+    std::thread::spawn(move || {
+        let result = (|| -> Result<PathBuf, String> {
+            let root = match unpack(&push)? {
+                Some(d) => d,
+                None => root(),
+            };
+            std::fs::create_dir_all(&dir).map_err(|e| format!("{dir}: {e}"))?;
+            if dev && ADMIN.load(std::sync::atomic::Ordering::Relaxed) {
+                // the editable files stay editable without the administrator: the Users group may change the folder
+                let _ = hide(&mut Command::new("icacls")).arg(&dir).args(["/grant", "*S-1-5-32-545:(OI)(CI)M"]).status();
+            }
+            let py = python(&root, &push)?;
+            let mut c = Command::new(py);
+            c.arg("-u").arg(root.join("tools").join("install").join("instalar.py")).arg(&iso).current_dir(&root);
+            c.args(["--modo", if dev { "desenvolvedor" } else { "jogador" }, "--destino", &dir]);
+            run_logged(&mut c, &push)?;
+            Ok(PathBuf::from(&dir).join("Tenkaichi3.exe"))
+        })();
+        let ok = result.is_ok();
+        match result {
+            Ok(exe) => state(|s| s.done = Some(exe)),
+            Err(e) => push(&format!("ERRO: {e}")),
+        }
+        unsafe { PostMessageW(MAIN.load(std::sync::atomic::Ordering::Relaxed), WM_FINISHED, ok as usize, 0) };
+    });
+}
+
+/// Where the installation is, from a line of its output: (progress 0..1000, status text).
+fn progress_of(line: &str, dev: bool) -> Option<(f64, String)> {
+    let stage = |a: f64, t: &str| Some((a, t.to_string()));
+    if let Some(rest) = line.strip_prefix("== ") {
+        return match rest.get(..3) {
+            Some("1/6") => stage(10.0, "Lendo o disco (1 de 6)"),
+            Some("3/6") => stage(60.0, "Copiando os arquivos e convertendo músicas e vozes (2 de 6)"),
+            Some("2/6") => stage(150.0, "Tabelas do jogo (3 de 6)"),
+            Some("4/6") => stage(160.0, "Convertendo os arquivos do jogo (4 de 6); a primeira vez demora bastante"),
+            Some("5/6") => stage(780.0, "Recursos de PC e pastas (5 de 6)"),
+            Some("6/6") => stage(if dev { 950.0 } else { 870.0 }, "Vídeos (6 de 6)"),
+            _ if rest.starts_with("empacot") => stage(900.0, "Empacotando os dados do jogo"),
+            _ if rest.starts_with("compilando") => None,
+            _ => None,
+        };
+    }
+    // files_extract.py: "<n> files, <m> textures (<s>s)" every 100 files, of about 3400
+    if let Some((n, _)) = line.split_once(" files, ") {
+        if let Ok(n) = n.trim().parse::<f64>() {
+            return Some((160.0 + 600.0 * (n / 3400.0).min(1.0), format!("Convertendo os arquivos do jogo (4 de 6): {n} arquivos")));
+        }
+    }
+    None
+}
+
+extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: usize, lp: isize) -> isize {
+    unsafe {
+        match msg {
+            WM_CREATE => {
+                MAIN.store(hwnd, std::sync::atomic::Ordering::Relaxed);
+                create(hwnd);
+                0
+            }
+            WM_PAINT => {
+                paint(hwnd);
+                0
+            }
+            WM_CTLCOLORSTATIC | WM_CTLCOLORBTN => {
+                // labels and radio buttons on the window's colour; the read-only log white
+                let Some(u) = HANDLES.get().copied() else { return DefWindowProcW(hwnd, msg, wp, lp) };
+                let (paper, white, log) = (u.paper, u.white, u.log);
+                SetBkColor(wp as HANDLE, PAPER);
+                if lp == log {
+                    SetBkColor(wp as HANDLE, WHITE);
+                    return white;
+                }
+                paper
+            }
+            WM_CTLCOLOREDIT => DefWindowProcW(hwnd, msg, wp, lp),
+            WM_COMMAND => {
+                match (wp & 0xFFFF) as isize {
+                    ID_ISO_BROWSE => pick_iso(hwnd),
+                    ID_DIR_BROWSE => pick_dir(hwnd),
+                    ID_PLAY | ID_DEV => mode_changed(),
+                    ID_INSTALL => start_install(hwnd),
+                    ID_START => {
+                        if let Some(p) = state(|s| s.done.clone()) {
+                            let dir = p.parent().map(|d| d.display().to_string()).unwrap_or_default();
+                            ShellExecuteW(hwnd, w("open").as_ptr(), w(&p.display().to_string()).as_ptr(), std::ptr::null(),
+                                          w(&dir).as_ptr(), 1);
+                            PostMessageW(hwnd, WM_CLOSE, 0, 0);
+                        }
+                    }
+                    ID_CLOSE => {
+                        PostMessageW(hwnd, WM_CLOSE, 0, 0);
+                    }
+                    _ => {}
+                }
+                0
+            }
+            WM_OUTPUT => {
+                let lines: Vec<String> = OUTPUT.lock().unwrap().drain(..).collect();
+                let dev = is_dev();
+                let u = h();
+                for l in &lines {
+                    append_log(u.log, l);
+                    if let Some((p, st)) = progress_of(l, dev) {
+                        if state(|s| if p >= s.stage { s.stage = p; true } else { false }) {
+                            SendMessageW(u.progress, PBM_SETPOS, p as usize, 0);
+                            set_text(u.status, &st);
+                        }
+                    }
+                }
+                0
+            }
+            WM_FINISHED => {
+                let ok = wp != 0;
+                state(|s| s.running = false);
+                let u = h();
+                set_text(u.close, "Fechar");
+                if ok {
+                    SendMessageW(u.progress, PBM_SETPOS, 1000, 0);
+                    set_text(u.status, "Pronto! O jogo está instalado.");
+                    ShowWindow(u.start, 1);
+                } else {
+                    set_text(u.status, "A instalação parou. Veja o motivo abaixo; ao instalar de novo, os passos prontos são pulados.");
+                    for c in [u.iso, u.iso_browse, u.play, u.dev, u.dir, u.dir_browse, u.install] {
+                        EnableWindow(c, 1);
+                    }
+                }
+                if ok {
+                    message(hwnd, "Instalação concluída. Clique em \"Jogar agora\" ou use o atalho \"Tenkaichi 3\" da área de trabalho ou do menu Iniciar.",
+                            MB_OK | MB_ICONINFO);
+                }
+                0
+            }
+            WM_CLOSE => {
+                let (running, child) = state(|s| (s.running, s.child));
+                if running {
+                    if message(hwnd, "Parar a instalação? Ao instalar de novo, os passos prontos são pulados.", MB_YESNO | MB_ICONWARNING)
+                        != IDYES
+                    {
+                        return 0;
+                    }
+                    if let Some(pid) = child {
+                        // the installer and the programs it started
+                        let _ = hide(&mut Command::new("taskkill")).args(["/T", "/F", "/PID", &pid.to_string()]).status();
+                    }
+                }
+                DefWindowProcW(hwnd, msg, wp, lp)
+            }
+            WM_DESTROY => {
+                PostQuitMessage(0);
+                0
+            }
+            _ => DefWindowProcW(hwnd, msg, wp, lp),
+        }
+    }
+}

@@ -1,0 +1,15 @@
+[package]
+name = "bt3-original"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT"
+description = "Tenkaichi 3 traduzido mecanicamente do C da decompilação para Rust, sobre o modelo de memória do PS2."
+default-run = "bt3-original"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "bt3-original"
+path = "src/main.rs"

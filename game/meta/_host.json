@@ -1,0 +1,983 @@
+{
+"ADXERR_EntryErrFunc": [
+[
+"u32",
+"u32"
+],
+"()",
+false
+],
+"ADXF_Close": [
+[
+"u32"
+],
+"()",
+false
+],
+"ADXF_GetFsizeSct": [
+[
+"u32"
+],
+"i32",
+false
+],
+"ADXF_GetPtStat": [
+[
+"i32"
+],
+"i32",
+false
+],
+"ADXF_GetStat": [
+[
+"u32"
+],
+"i32",
+false
+],
+"ADXF_LoadPartitionNw": [
+[
+"i32",
+"u32",
+"u32",
+"u32"
+],
+"i32",
+false
+],
+"ADXF_Open": [
+[
+"u32",
+"u32"
+],
+"u32",
+false
+],
+"ADXF_OpenAfs": [
+[
+"i32",
+"i32"
+],
+"u32",
+false
+],
+"ADXF_ReadNw": [
+[
+"u32",
+"i32",
+"u32"
+],
+"i32",
+false
+],
+"ADXF_Stop": [
+[
+"u32"
+],
+"i32",
+false
+],
+"ADXF_Tell": [
+[
+"u32"
+],
+"i32",
+false
+],
+"ADXM_ExecMain": [
+[],
+"()",
+false
+],
+"ADXM_WaitVsync": [
+[],
+"()",
+false
+],
+"ADXPS2_ExecVint": [
+[
+"i32"
+],
+"()",
+false
+],
+"ADXPS2_LoadFcacheDvd": [
+[
+"u32"
+],
+"()",
+false
+],
+"ADXPS2_SetupDvdFs": [
+[
+"u32"
+],
+"()",
+false
+],
+"ADXPS2_SetupThrd": [
+[
+"u32",
+"i32"
+],
+"()",
+false
+],
+"ADXT_Create": [
+[
+"i32",
+"u32",
+"i32"
+],
+"u32",
+false
+],
+"ADXT_GetOutVol": [
+[
+"u32"
+],
+"i32",
+false
+],
+"ADXT_GetStat": [
+[
+"u32"
+],
+"i32",
+false
+],
+"ADXT_Init": [
+[],
+"()",
+false
+],
+"ADXT_Pause": [
+[
+"u32",
+"i32"
+],
+"()",
+false
+],
+"ADXT_SetOutPan": [
+[
+"u32",
+"i32",
+"i32"
+],
+"()",
+false
+],
+"ADXT_SetOutVol": [
+[
+"u32",
+"i32"
+],
+"()",
+false
+],
+"ADXT_SetOutputMono": [
+[
+"i32"
+],
+"()",
+false
+],
+"ADXT_SetReloadSct": [
+[
+"u32",
+"i32"
+],
+"()",
+false
+],
+"ADXT_SetSvrFreq": [
+[
+"u32",
+"i32"
+],
+"()",
+false
+],
+"ADXT_StartAfs": [
+[
+"u32",
+"i32",
+"i32"
+],
+"()",
+false
+],
+"ADXT_StartFname": [
+[
+"u32",
+"u32"
+],
+"()",
+false
+],
+"ADXT_Stop": [
+[
+"u32"
+],
+"()",
+false
+],
+"Port_FastMtxApply": [
+[
+"u32",
+"u32",
+"u32"
+],
+"i32",
+false
+],
+"Port_GameBigAlloc": [
+[
+"i32"
+],
+"u32",
+false
+],
+"Port_GameBigFree": [
+[
+"u32"
+],
+"i32",
+false
+],
+"Port_GsGifChannel": [
+[
+"u32",
+"u32",
+"i32"
+],
+"()",
+false
+],
+"Port_GsVif1Chain": [
+[
+"u32",
+"i32"
+],
+"()",
+false
+],
+"Port_Malloc": [
+[
+"u32"
+],
+"u32",
+false
+],
+"Port_NameFontSheets": [
+[
+"i32",
+"i32",
+"i32"
+],
+"()",
+false
+],
+"Port_NetLeave": [
+[],
+"()",
+false
+],
+"Port_NetMenuListed": [
+[],
+"i32",
+false
+],
+"Port_NetMenuOpen": [
+[],
+"()",
+false
+],
+"Port_NetSession": [
+[],
+"i32",
+false
+],
+"Port_NetView": [
+[],
+"i32",
+false
+],
+"Port_SongDebug": [
+[
+"i32",
+"i32",
+"i32",
+"i32",
+"i32",
+"i32"
+],
+"()",
+false
+],
+"Port_StageBufSize": [
+[],
+"i32",
+false
+],
+"Port_TestBgm": [
+[],
+"i32",
+false
+],
+"Port_TestScreen": [
+[],
+"i32",
+false
+],
+"Port_TestStage": [
+[],
+"i32",
+false
+],
+"Port_WideFactor": [
+[],
+"F32",
+false
+],
+"RefVu0_AddBits": [
+[
+"u32",
+"u32"
+],
+"u32",
+false
+],
+"RefVu0_DivBits": [
+[
+"u32",
+"u32"
+],
+"u32",
+false
+],
+"RefVu0_MulBits": [
+[
+"u32",
+"u32"
+],
+"u32",
+false
+],
+"abs": [
+[
+"i32"
+],
+"i32",
+false
+],
+"atoi": [
+[
+"u32"
+],
+"i32",
+false
+],
+"fclose": [
+[
+"u32"
+],
+"i32",
+false
+],
+"fopen": [
+[
+"u32",
+"u32"
+],
+"u32",
+false
+],
+"fprintf": [
+[
+"u32",
+"u32"
+],
+"i32",
+true
+],
+"fread": [
+[
+"u32",
+"u32",
+"u32",
+"u32"
+],
+"u32",
+false
+],
+"fseek": [
+[
+"u32",
+"i32",
+"i32"
+],
+"i32",
+false
+],
+"func_00277A70": [
+[
+"u32"
+],
+"i32",
+false
+],
+"func_002967C0": [
+[
+"i32",
+"i32",
+"i32",
+"i32"
+],
+"i32",
+true
+],
+"func_00296B48": [
+[
+"i32"
+],
+"i32",
+false
+],
+"func_002A1A48": [
+[],
+"i32",
+false
+],
+"func_002A1E58": [
+[
+"i32",
+"i32",
+"u32",
+"i32"
+],
+"i32",
+false
+],
+"func_002A1F80": [
+[
+"i32",
+"i32",
+"u32"
+],
+"i32",
+false
+],
+"func_002A1FB8": [
+[
+"i32"
+],
+"i32",
+false
+],
+"func_002A2078": [
+[
+"i32",
+"i32",
+"i32"
+],
+"i32",
+false
+],
+"func_002A2208": [
+[
+"i32",
+"u32",
+"i32"
+],
+"i32",
+false
+],
+"func_002A2320": [
+[
+"i32",
+"u32",
+"i32"
+],
+"i32",
+false
+],
+"func_002A2498": [
+[
+"i32",
+"u32",
+"u32"
+],
+"i32",
+false
+],
+"func_002A25B8": [
+[
+"i32",
+"i32",
+"u32",
+"u32",
+"u32"
+],
+"i32",
+false
+],
+"func_002A27A8": [
+[
+"i32",
+"i32",
+"u32",
+"i32",
+"i32",
+"u32"
+],
+"i32",
+false
+],
+"func_002A2AC8": [
+[
+"i32",
+"i32"
+],
+"i32",
+false
+],
+"func_002B4AF0": [
+[
+"u32"
+],
+"i32",
+false
+],
+"getenv": [
+[
+"u32"
+],
+"u32",
+false
+],
+"memcmp": [
+[
+"u32",
+"u32",
+"u32"
+],
+"i32",
+false
+],
+"memcpy": [
+[
+"u32",
+"u32",
+"u32"
+],
+"u32",
+false
+],
+"memset": [
+[
+"u32",
+"i32",
+"u32"
+],
+"u32",
+false
+],
+"pow": [
+[
+"f64",
+"f64"
+],
+"f64",
+false
+],
+"sceCdGetDiskTypeSafe": [
+[],
+"i32",
+false
+],
+"sceCdSearchFile": [
+[
+"u32",
+"u32"
+],
+"i32",
+false
+],
+"sceCdStatus": [
+[],
+"i32",
+false
+],
+"sceClose": [
+[
+"i32"
+],
+"i32",
+false
+],
+"sceDbcInit": [
+[],
+"i32",
+false
+],
+"sceGsExecStoreImage": [
+[
+"u32",
+"u32"
+],
+"i32",
+false
+],
+"sceGsPutDrawEnv": [
+[
+"u32"
+],
+"i32",
+false
+],
+"sceGsResetGraph": [
+[
+"i16",
+"i16",
+"i16",
+"i16"
+],
+"()",
+false
+],
+"sceGsResetPath": [
+[],
+"()",
+false
+],
+"sceGsSetDefDBuff": [
+[
+"u32",
+"i16",
+"i16",
+"i16",
+"i16",
+"i16",
+"i16"
+],
+"i32",
+false
+],
+"sceGsSetDefStoreImage": [
+[
+"u32",
+"i16",
+"i16",
+"i16",
+"i16",
+"i16",
+"i16",
+"i16"
+],
+"()",
+false
+],
+"sceGsSwapDBuff": [
+[
+"u32",
+"i32"
+],
+"()",
+false
+],
+"sceGsSyncPath": [
+[
+"i32",
+"u16"
+],
+"i32",
+false
+],
+"sceGsSyncV": [
+[
+"i32"
+],
+"i32",
+false
+],
+"sceGsSyncVCallback": [
+[
+"u32"
+],
+"u32",
+false
+],
+"sceLseek": [
+[
+"i32",
+"i32",
+"i32"
+],
+"i32",
+false
+],
+"sceMpegAddCallback": [
+[
+"u32",
+"i32",
+"u32",
+"u32"
+],
+"u32",
+false
+],
+"sceMpegAddStrCallback": [
+[
+"u32",
+"i32",
+"i32",
+"u32",
+"u32"
+],
+"u32",
+false
+],
+"sceMpegCreate": [
+[
+"u32",
+"u32",
+"i32"
+],
+"i32",
+false
+],
+"sceMpegDelete": [
+[
+"u32"
+],
+"i32",
+false
+],
+"sceMpegDemuxPss": [
+[
+"u32",
+"u32",
+"i32"
+],
+"i32",
+false
+],
+"sceMpegGetPicture": [
+[
+"u32",
+"u32",
+"i32"
+],
+"i32",
+false
+],
+"sceMpegInit": [
+[],
+"i32",
+false
+],
+"sceMpegIsEnd": [
+[
+"u32"
+],
+"i32",
+false
+],
+"sceMpegReset": [
+[
+"u32"
+],
+"i32",
+false
+],
+"sceOpen": [
+[
+"u32",
+"i32"
+],
+"i32",
+false
+],
+"scePad2CreateSocket": [
+[
+"u32",
+"u32"
+],
+"i32",
+false
+],
+"scePad2GetButtonProfile": [
+[
+"i32",
+"u32"
+],
+"i32",
+false
+],
+"scePad2GetState": [
+[
+"i32"
+],
+"i32",
+false
+],
+"scePad2Init": [
+[
+"i32"
+],
+"i32",
+false
+],
+"scePad2Read": [
+[
+"i32",
+"u32"
+],
+"i32",
+false
+],
+"sceRead": [
+[
+"i32",
+"u32",
+"i32"
+],
+"i32",
+false
+],
+"sceSdRemoteInit": [
+[],
+"i32",
+false
+],
+"sceSifAllocIopHeap": [
+[
+"i32"
+],
+"u32",
+false
+],
+"sceSifBindRpc": [
+[
+"u32",
+"i32",
+"i32"
+],
+"i32",
+false
+],
+"sceSifCallRpc": [
+[
+"u32",
+"i32",
+"i32",
+"u32",
+"i32",
+"u32",
+"i32",
+"u32",
+"u32"
+],
+"i32",
+false
+],
+"sceSifDmaStat": [
+[
+"u32"
+],
+"i32",
+false
+],
+"sceSifFreeIopHeap": [
+[
+"u32"
+],
+"i32",
+false
+],
+"sceSifInitIopHeap": [
+[],
+"i32",
+false
+],
+"sceSifQueryMaxFreeMemSize": [
+[],
+"i32",
+false
+],
+"sceSifQueryTotalFreeMemSize": [
+[],
+"i32",
+false
+],
+"sceSifSetDma": [
+[
+"u32",
+"i32"
+],
+"u32",
+false
+],
+"sceVibGetProfile": [
+[
+"i32",
+"u32"
+],
+"i32",
+false
+],
+"sceVibSetActParam": [
+[
+"i32",
+"i32",
+"u32",
+"i32",
+"u32"
+],
+"i32",
+false
+],
+"sprintf": [
+[
+"u32",
+"u32",
+"i32"
+],
+"i32",
+true
+],
+"strcmp": [
+[
+"u32",
+"u32"
+],
+"i32",
+false
+],
+"strcpy": [
+[
+"u32",
+"u32"
+],
+"u32",
+false
+],
+"strlen": [
+[
+"u32"
+],
+"u32",
+false
+],
+"strtol": [
+[
+"u32",
+"u32",
+"i32"
+],
+"i32",
+false
+]
+}

@@ -1,0 +1,20 @@
+# Dados do jogo: vêm do disco de cada pessoa e nunca entram no repositório
+/assets/
+/game/meta/*
+!/game/meta/_host.json
+!/game/meta/_index.json
+
+# Compilação e ambientes locais
+/target/
+/build/
+/.venv/
+__pycache__/
+/tools/difftest/build/
+/tools/difftest/config_local.py
+
+# Saídas locais
+/jogar_erros.txt
+*.ppm
+
+# O pacote do jogador (tools/install/empacotar.py)
+/dist/

@@ -1,0 +1,15 @@
+# Tenkaichi3Rust: o jogo (game/, crate bt3-original) e o instalador (tools/install, crate bt3-install).
+[workspace]
+resolver = "2"
+members = ["game", "tools/install"]
+
+[profile.dev]
+opt-level = 1
+
+# O jogo tem ~255 mil linhas geradas: muitas unidades de compilação e incremental deixam as recompilações em minutos.
+[profile.release]
+opt-level = 2
+codegen-units = 256
+incremental = true
+lto = "off"
+debug = "line-tables-only"

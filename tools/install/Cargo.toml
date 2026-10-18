@@ -1,0 +1,15 @@
+[package]
+name = "bt3-install"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT"
+description = "Instalador: copia os arquivos do disco para assets/_legacy/raw e converte as músicas e vozes (ADX) em WAV."
+
+[lib]
+name = "bt3_install"
+path = "src/lib.rs"
+
+[[bin]]
+name = "bt3-install"
+path = "src/main.rs"
