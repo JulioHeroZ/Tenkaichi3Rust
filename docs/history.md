@@ -390,3 +390,17 @@ que todos os recursos estejam integrados e corretos no PC.
   * o download pelo Google Drive e a extração do RAR no Windows;
   * a janela em 16:9 com o fundo desfocado dos menus (os testes não têm janela);
   * a interface da luta nas bordas.
+
+## 2026-10-18: instalação mais rápida
+
+* **Passo 4** (`tools/assets/files_extract.py`): converte os arquivos em paralelo, um processo por núcleo
+  (`BT3_EXTRACT_JOBS` muda o número).
+  * Os bancos de animação ficam para uma segunda rodada, porque precisam do modelo do lutador já escrito.
+  * A lista de arquivos prontos continua permitindo parar e retomar.
+  * A saída é idêntica à da versão em série: 106 arquivos de teste, 2.682 arquivos escritos, sem nenhuma diferença.
+  * Com 2 núcleos, o tempo caiu de 52 s para 27 s.
+* **Passo 3** (`bt3-install export`): a cópia e a conversão de músicas e vozes em WAV rodam em várias threads.
+  O catálogo é escrito na ordem de antes e a saída é idêntica.
+* **Empacotamento** (`tools/install/pack.py`): a compressão roda em várias threads. O pacote sai byte a byte igual.
+* **Instalador:** a barra do passo 4 usa o total real de arquivos (cerca de 9.500 com as quatro partições), em vez
+  de 3.400.

@@ -189,29 +189,21 @@ fn main() -> io::Result<()> {
         catalog,
         "resource_id,source,bytes,signature,wav,rate,samples,channels,loop_start,loop_end,status"
     )?;
-    let mut audio = 0;
-    let mut failures = 0;
-    for (index, path) in list.iter().enumerate() {
+    // the files on several threads (copying and decoding are independent); the catalog written in order after
+    let audio = std::sync::atomic::AtomicUsize::new(0);
+    let failures = std::sync::atomic::AtomicUsize::new(0);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let lines: Vec<std::sync::Mutex<Option<io::Result<String>>>> = (0..list.len()).map(|_| std::sync::Mutex::new(None)).collect();
+    let one = |path: &PathBuf| -> io::Result<String> {
         let relative = path.strip_prefix(&root).unwrap();
-        let partition = relative
-            .components()
-            .next()
-            .unwrap()
-            .as_os_str()
-            .to_string_lossy();
+        let partition = relative.components().next().unwrap().as_os_str().to_string_lossy();
         let name = path.file_name().unwrap().to_string_lossy();
-        let id = path
-            .file_stem()
-            .unwrap()
-            .to_string_lossy()
-            .parse::<u32>()
-            .ok()
-            .map(|n| match partition.as_ref() {
-                "pzs3us0" => n,
-                "pzs3us1" => n + 1,
-                "pzs3us2" => n + 3400,
-                _ => n,
-            });
+        let id = path.file_stem().unwrap().to_string_lossy().parse::<u32>().ok().map(|n| match partition.as_ref() {
+            "pzs3us0" => n,
+            "pzs3us1" => n + 1,
+            "pzs3us2" => n + 3400,
+            _ => n,
+        });
         let data = fs::read(path)?;
         let raw = output.join("_legacy/raw").join(relative);
         fs::create_dir_all(raw.parent().unwrap())?;
@@ -221,40 +213,47 @@ fn main() -> io::Result<()> {
         let signature: String = data.iter().take(4).map(|b| format!("{b:02x}")).collect();
         let mut values = String::from(",,,,,,raw");
         if data.starts_with(&[0x80, 0]) {
-            let target = PathBuf::from("audio/streams")
-                .join(partition.as_ref())
-                .join(format!("{name}.wav"));
+            let target = PathBuf::from("audio/streams").join(partition.as_ref()).join(format!("{name}.wav"));
             let destination = output.join(&target);
             fs::create_dir_all(destination.parent().unwrap())?;
             match wav(&destination, &data) {
                 Ok((rate, total, ch, ls, le)) => {
-                    audio += 1;
-                    values = format!(
-                        "{},{rate},{total},{ch},{ls},{le},decoded",
-                        csv(&target.to_string_lossy())
-                    );
+                    audio.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    values = format!("{},{rate},{total},{ch},{ls},{le},decoded", csv(&target.to_string_lossy()));
                 }
                 Err(e) => {
-                    failures += 1;
+                    failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     values = format!(",,,,,,{}", csv(&e.to_string()));
                 }
             }
         }
-        writeln!(
-            catalog,
+        Ok(format!(
             "{},{},{},{signature},{values}",
             id.map(|n| n.to_string()).unwrap_or_default(),
             csv(&relative.to_string_lossy()),
             data.len()
-        )?;
-        if index % 2000 == 0 {
-            println!(
-                "{index}/{} files; {audio} WAV; {failures} errors",
-                list.len()
-            );
-            catalog.flush()?;
+        ))
+    };
+    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).min(16);
+    std::thread::scope(|sc| {
+        for _ in 0..threads {
+            sc.spawn(|| loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if i >= list.len() {
+                    return;
+                }
+                *lines[i].lock().unwrap() = Some(one(&list[i]));
+                if i % 2000 == 0 {
+                    println!("{i}/{} files; {} WAV; {} errors", list.len(), audio.load(std::sync::atomic::Ordering::Relaxed),
+                             failures.load(std::sync::atomic::Ordering::Relaxed));
+                }
+            });
         }
+    });
+    for l in lines {
+        writeln!(catalog, "{}", l.into_inner().unwrap().expect("every file done")?)?;
     }
+    let (audio, failures) = (audio.into_inner(), failures.into_inner());
     catalog.flush()?;
     let summary = format!(
         "{{\"files\":{},\"adx_wav\":{audio},\"decode_errors\":{failures}}}\n",

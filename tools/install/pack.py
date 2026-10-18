@@ -10,6 +10,7 @@ length, the path (UTF-8, '/', relative to the assets folder), u64 offset, u32 st
     python tools/install/pack.py <assets> <out folder>
 """
 import os, struct, sys, zlib
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 SKIP_TOP = {"_legacy", "catalog.csv", "summary.json"}
@@ -17,22 +18,31 @@ PACKS = {"files": "files", "audio": "audio", "data": "data", "video": "video"}
 STORED = {".png", ".m2v"}
 
 
+def entry(assets, rel):
+    """a file as stored in the pack: (method, stored bytes, size)"""
+    data = (assets / rel).read_bytes()
+    method, stored = 0, data
+    if Path(rel).suffix.lower() not in STORED and len(data) > 64:
+        z = zlib.compress(data, 6)
+        if len(z) < len(data) * 0.9:
+            method, stored = 1, z
+    return method, stored, len(data)
+
+
 def pack(assets, rels, out):
     tmp = out.with_name(out.name + ".tmp")
     index = []
-    with open(tmp, "wb") as f:
+    # files read and compressed on several threads (zlib lets the others run), written in order: the same pack
+    with open(tmp, "wb") as f, ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as ex:
         f.write(b"BT3PAK1\0" + bytes(12))
-        for i, rel in enumerate(rels):
-            data = (assets / rel).read_bytes()
-            method, stored = 0, data
-            if Path(rel).suffix.lower() not in STORED and len(data) > 64:
-                z = zlib.compress(data, 6)
-                if len(z) < len(data) * 0.9:
-                    method, stored = 1, z
-            index.append((rel, f.tell(), len(stored), len(data), method))
-            f.write(stored)
-            if i % 5000 == 0:
-                print("  %s: %d/%d" % (out.name, i, len(rels)), flush=True)
+        step = 256
+        for start in range(0, len(rels), step):
+            batch = rels[start:start + step]
+            for rel, (method, stored, size) in zip(batch, ex.map(lambda r: entry(assets, r), batch)):
+                index.append((rel, f.tell(), len(stored), size, method))
+                f.write(stored)
+            if (start // step) % 20 == 0:
+                print("  %s: %d/%d" % (out.name, start, len(rels)), flush=True)
         at = f.tell()
         for rel, off, ln, size, method in index:
             p = rel.encode("utf-8")

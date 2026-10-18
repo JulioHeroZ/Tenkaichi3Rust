@@ -359,64 +359,119 @@ def write(out, files):
         os.replace(tmp, path)  # whole or not at all
 
 
+SKIP_SUFFIXES = (".ALG", ".PSS", ".DIR", "SLUS_216.78")  # the partition archives, the movies, the index
+
+
+def extract_one(raw, assets, part, f, banks):
+    """one file of the disc to its open files. Returns (written, textures, deferred): an animation bank is left for
+    the second round (`banks` False), when the model of its fighter (8 files before it) is written."""
+    src = os.path.join(raw, part)
+    d = open(os.path.join(src, f), "rb").read()
+    stem = f[:-4] if f.endswith(".bin") else f
+    out = os.path.join(assets, "files", part, stem)
+    if part == "pzs3us1" and stem.isdigit():
+        out = str(asset_dirs.find(assets, int(stem)))  # its folder when it was grouped already (organize.py)
+    packed = bpe.is_bpe(d)
+    files = None
+    ntex = 0
+    if not packed and motion.bank_entries(d):
+        if not banks:
+            return 0, 0, True
+        # an animation bank: the model of its fighter is 8 files before it (first costume)
+        model = None
+        if stem.isdigit() and part == "pzs3us1":
+            mdir = asset_dirs.find(assets, int(stem) - 8)
+            if (mdir / "model.gltf").exists():
+                ref = urllib.parse.quote(os.path.relpath(mdir, out).replace(os.sep, "/"))
+                model = ((mdir / "model.gltf").read_text(), ref)
+        files = motion.convert_bank(d, model, lambda data, k: convert_data(data, "%s/%s entry %d" % (part, f, k))[0])
+        if files:
+            ntex += sum(1 for n in files if n.endswith(".png"))
+    if files is None:
+        data, tail = bpe.expand(d) if packed else (d, b"")
+        files, nt = convert_data(data, "%s/%s" % (part, f))
+        if files is not None and packed:
+            files["bpe.txt"] = ("# %s/%s is packed with the game's BPE (tools/assets/bpe.py); skeleton.bin is unpacked\n"
+                                "block 10000 hash 16384 tail %s\n" % (part, f, tail.hex())).encode()
+        ntex += nt
+    if files:
+        write(out, files)
+    return (1 if files else 0), ntex, False
+
+
+def _work(job):
+    raw, assets, part, f, banks = job
+    try:
+        return (part, f) + extract_one(raw, assets, part, f, banks) + (None,)
+    except Exception as e:  # reported by the main process, which stops
+        import traceback
+        return (part, f, 0, 0, False, "%s: %s\n%s" % (f, e, traceback.format_exc()))
+
+
+def workers():
+    """processes: BT3_EXTRACT_JOBS, else one per processor (the files are independent of each other)"""
+    n = os.environ.get("BT3_EXTRACT_JOBS")
+    return max(1, int(n) if n else (os.cpu_count() or 1))
+
+
 def main():
     raw, assets = sys.argv[1], sys.argv[2]
     parts = sys.argv[3:] or ["pzs3us1"]
     t0 = time.time()
     nfiles = ntex = 0
+    os.makedirs(os.path.join(assets, "files"), exist_ok=True)
+    deadline = time.time() + float(os.environ.get("SECONDS_MAX", "1e9"))
+    # resumable: the files already looked at are listed in assets/files/extraidos-<part>.txt
+    todo, done_files = [], {}
     for part in parts:
         src = os.path.join(raw, part)
-        # resumable: the files already looked at are listed in assets/files/extraidos-<part>.txt
-        os.makedirs(os.path.join(assets, "files"), exist_ok=True)
         done_path = os.path.join(assets, "files", "extraidos-%s.txt" % part)
         old_path = os.path.join(assets, "files", part, "scanned3.txt")  # where earlier versions kept it
         if os.path.exists(old_path) and not os.path.exists(done_path):
             os.replace(old_path, done_path)
         done = set(open(done_path).read().split()) if os.path.exists(done_path) else set()
-        done_file = open(done_path, "a")
-        deadline = time.time() + float(os.environ.get("SECONDS_MAX", "1e9"))
+        done_files[part] = open(done_path, "a")
         # loose files in folders too (disc/DATA/...): names relative to the partition, with /
         names = sorted(os.path.relpath(os.path.join(r, n), src).replace(os.sep, "/") for r, _, ns in os.walk(src) for n in ns)
-        for f in names:
-            if f in done:
-                continue
-            if f.upper().endswith((".ALG", ".PSS", ".DIR", "SLUS_216.78")):
-                continue  # the partition archives (extracted as pzs3us*), the movies (MPEG-2, already open), the index
-            if time.time() > deadline:
-                print("stopped for now (time limit); run again to continue")
-                return
-            d = open(os.path.join(src, f), "rb").read()
-            stem = f[:-4] if f.endswith(".bin") else f
-            out = os.path.join(assets, "files", part, stem)
-            if part == "pzs3us1" and stem.isdigit():
-                out = str(asset_dirs.find(assets, int(stem)))  # its folder when it was grouped already (organize.py)
-            packed = bpe.is_bpe(d)
-            files = None
-            if not packed and motion.bank_entries(d):
-                # an animation bank: the model of its fighter is 8 files before it (first costume)
-                model = None
-                if stem.isdigit() and part == "pzs3us1":
-                    mdir = asset_dirs.find(assets, int(stem) - 8)
-                    if (mdir / "model.gltf").exists():
-                        ref = urllib.parse.quote(os.path.relpath(mdir, out).replace(os.sep, "/"))
-                        model = ((mdir / "model.gltf").read_text(), ref)
-                files = motion.convert_bank(d, model, lambda data, k: convert_data(data, "%s/%s entry %d" % (part, f, k))[0])
-                if files:
-                    ntex += sum(1 for n in files if n.endswith(".png"))
-            if files is None:
-                data, tail = bpe.expand(d) if packed else (d, b"")
-                files, nt = convert_data(data, "%s/%s" % (part, f))
-                if files is not None and packed:
-                    files["bpe.txt"] = ("# %s/%s is packed with the game's BPE (tools/assets/bpe.py); skeleton.bin is unpacked\n"
-                                        "block 10000 hash 16384 tail %s\n" % (part, f, tail.hex())).encode()
+        todo += [(part, f) for f in names if f not in done and not f.upper().endswith(SKIP_SUFFIXES)]
+    total = len(todo)
+    jobs = workers()
+    print("%d files to convert, %d processes" % (total, jobs), flush=True)
+
+    def run_round(items, banks):
+        nonlocal nfiles, ntex
+        deferred = []
+        args = [(raw, assets, part, f, banks) for part, f in items]
+        if jobs > 1 and len(args) > 1:
+            import multiprocessing
+            pool = multiprocessing.Pool(jobs)
+            results = pool.imap_unordered(_work, args, chunksize=2)
+        else:
+            pool, results = None, map(_work, args)
+        try:
+            for part, f, wrote, nt, later, err in results:
+                if err:
+                    raise SystemExit("failed on %s/%s" % (part, err))
+                if later:
+                    deferred.append((part, f))
+                    continue
+                nfiles += wrote
                 ntex += nt
-            if files:
-                write(out, files)
-                nfiles += 1
-            done_file.write(f + "\n")
-            done_file.flush()
-            if files and nfiles % 100 == 0:
-                print("%d files, %d textures (%.0fs)" % (nfiles, ntex, time.time() - t0), flush=True)
+                done_files[part].write(f + "\n")
+                done_files[part].flush()
+                if wrote and nfiles % 100 == 0:
+                    print("%d files, %d textures (%.0fs) of %d" % (nfiles, ntex, time.time() - t0, total), flush=True)
+                if time.time() > deadline:
+                    print("stopped for now (time limit); run again to continue")
+                    raise SystemExit(0)
+        finally:
+            if pool is not None:
+                pool.terminate()
+        return deferred
+
+    # first round: every file but the animation banks; second: the banks, now that the models are written
+    banks = run_round(todo, False)
+    run_round(banks, True)
     print("done: %d files, %d textures (%.0fs)" % (nfiles, ntex, time.time() - t0))
 
 
