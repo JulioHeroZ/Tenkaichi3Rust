@@ -3,6 +3,7 @@ rem Testa a build do jogo antes de gerar o instalador (tools\install\testar_buil
 rem inicial e uma luta numa janela escondida e confere as imagens. Resultado no fim; imagens em dist\teste.
 cd /d "%~dp0..\.."
 set PY=python
+set PYTHONIOENCODING=utf-8
 if exist ".venv\Scripts\python.exe" set PY=.venv\Scripts\python.exe
 %PY% tools\install\testar_build.py %*
 set R=%errorlevel%

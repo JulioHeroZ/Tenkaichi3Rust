@@ -4,6 +4,7 @@ rem antes (testar_build.py). O andamento fica em dist\gerar.log; a ultima linha 
 if not "%1"=="min" (start "" /min /low cmd /c "%~f0" min ^& exit /b)
 cd /d "%~dp0..\.."
 set PY=python
+set PYTHONIOENCODING=utf-8
 if exist ".venv\Scripts\python.exe" set PY=.venv\Scripts\python.exe
 if not exist dist mkdir dist
 echo inicio %date% %time% > dist\gerar.log
