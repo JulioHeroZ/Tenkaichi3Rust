@@ -1,0 +1,16 @@
+{
+  "$schema": "https://recomp.fyi/schema/v1.json",
+  "game": "Dragon Ball Z: Budokai Tenkaichi 3",
+  "system": "PS2",
+  "type": "port",
+  "original": { "region": "USA", "serial": "SLUS-21678" },
+  "project": "Tenkaichi3Rust",
+  "status": "in-progress",
+  "targets": ["Windows"],
+  "approach": "Native Rust port of the decompiled game code, with the game data extracted to open formats at install",
+  "maintainers": [{ "name": "JulioHeroZ", "link": "https://github.com/JulioHeroZ" }],
+  "links": [{ "label": "Releases", "url": "https://github.com/JulioHeroZ/Tenkaichi3Rust/releases" }],
+  "help": ["Widescreen 16:9 support", "Testing on more Windows machines"],
+  "tags": ["rust", "fighting"],
+  "notes": "Runs 100% in Rust: the graphical installer extracts the user's own disc into open formats (PNG, glTF, WAV, JSON) and installs a playable Tenkaichi3.exe. Player mode packs the data; developer mode keeps every file editable for mods. No game data is included in the repository."
+}
